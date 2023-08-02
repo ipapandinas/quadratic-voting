@@ -23,6 +23,8 @@ pub mod pallet {
 	#[pallet::pallet]
 	pub struct Pallet<T>(_);
 
+	pub type ProposalId = u32;
+
 	/// Configure the pallet by specifying the parameters and types on which it depends.
 	#[pallet::config]
 	pub trait Config: frame_system::Config {
@@ -41,26 +43,28 @@ pub mod pallet {
 	// The pallet's runtime storage items.
 	// https://docs.substrate.io/main-docs/build/runtime-storage/
 	#[pallet::storage]
-	#[pallet::getter(fn something)]
+	#[pallet::getter(fn registered_voters)]
 	// Learn more about declaring storage items:
 	// https://docs.substrate.io/main-docs/build/runtime-storage/#declaring-storage-items
-	pub type Something<T> = StorageValue<_, u32>;
+	pub type RegisteredVoters<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, (), OptionQuery>;
 
 	// Pallets use events to inform users when important changes are made.
 	// https://docs.substrate.io/main-docs/build/events-errors/
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		/// Event documentation should end with an array that provides descriptive names for event
-		/// parameters. [something, who]
-		SomethingStored { something: u32, who: T::AccountId },
+		NewVoterRegistered { who: T::AccountId },
+		VoterUnregistered { who: T::AccountId },
 	}
 
 	// Errors inform users that something went wrong.
 	#[pallet::error]
 	pub enum Error<T> {
-		/// Error names should be descriptive.
-		NoneValue,
+		/// Origin has no permission to operate on the registered voter
+		OriginNoPermission,
+		/// A user is trying to vote, but is not registered in the `RegisteredVoters` storage.
+		VoterNotRegistered,
 		/// Errors should have helpful documentation associated with them.
 		StorageOverflow,
 	}
@@ -70,44 +74,45 @@ pub mod pallet {
 	// Dispatchable functions must be annotated with a weight and must return a DispatchResult.
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-		/// An example dispatchable that takes a singles value as a parameter, writes the value to
-		/// storage and emits an event. This function must be dispatched by a signed extrinsic.
 		#[pallet::call_index(0)]
 		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
-		pub fn do_something(origin: OriginFor<T>, something: u32) -> DispatchResult {
-			// Check that the extrinsic was signed and get the signer.
-			// This function will return an error if the extrinsic is not signed.
-			// https://docs.substrate.io/main-docs/build/origins/
-			let who = ensure_signed(origin)?;
-
-			// Update storage.
-			<Something<T>>::put(something);
-
-			// Emit an event.
-			Self::deposit_event(Event::SomethingStored { something, who });
-			// Return a successful DispatchResultWithPostInfo
+		pub fn register_voter(origin: OriginFor<T>, who: T::AccountId) -> DispatchResult {
+			ensure_root(origin)?;
+			RegisteredVoters::<T>::insert(&who, ());
+			Self::deposit_event(Event::<T>::NewVoterRegistered { who });
 			Ok(())
 		}
 
-		/// An example dispatchable that may throw a custom error.
 		#[pallet::call_index(1)]
-		#[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1).ref_time())]
-		pub fn cause_error(origin: OriginFor<T>) -> DispatchResult {
-			let _who = ensure_signed(origin)?;
-
-			// Read a value from storage.
-			match <Something<T>>::get() {
-				// Return an error if the value has not been set.
-				None => Err(Error::<T>::NoneValue.into()),
-				Some(old) => {
-					// Increment the value read from storage; will error in the event of overflow.
-					let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
-					// Update the value in storage with the incremented result.
-					<Something<T>>::put(new);
-					Ok(())
-				},
-			}
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		pub fn unregister_voter(origin: OriginFor<T>, who: T::AccountId) -> DispatchResult {
+			let caller =
+				ensure_signed_or_root(origin).map_err(|_| Error::<T>::OriginNoPermission)?;
+			ensure!((caller.is_none() || caller.unwrap() == who), Error::<T>::OriginNoPermission);
+			RegisteredVoters::<T>::remove(&who);
+			Self::deposit_event(Event::<T>::VoterUnregistered { who });
+			Ok(())
 		}
+
+		// An example dispatchable that may throw a custom error.
+		// #[pallet::call_index(1)]
+		// #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1).ref_time())]
+		// pub fn cause_error(origin: OriginFor<T>) -> DispatchResult {
+		// 	let _who = ensure_signed(origin)?;
+
+		// 	// Read a value from storage.
+		// 	match <Something<T>>::get() {
+		// 		// Return an error if the value has not been set.
+		// 		None => Err(Error::<T>::NoneValue.into()),
+		// 		Some(old) => {
+		// 			// Increment the value read from storage; will error in the event of overflow.
+		// 			let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
+		// 			// Update the value in storage with the incremented result.
+		// 			<Something<T>>::put(new);
+		// 			Ok(())
+		// 		},
+		// 	}
+		// }
 	}
 }
 
