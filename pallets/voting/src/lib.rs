@@ -1,13 +1,17 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+use frame_support::sp_runtime::Saturating;
 use frame_support::{dispatch::Vec, pallet_prelude::*, traits::fungible};
+use frame_system::pallet_prelude::BlockNumberFor;
 /// Edit this file to define custom logic or remove it if it is not needed.
 /// Learn more about FRAME and the core library of Substrate FRAME pallets:
 /// <https://docs.substrate.io/reference/frame-pallets/>
 pub use pallet::*;
+pub use types::{ProposalData, ProposalId, ProposalKind};
 
 #[cfg(test)]
 mod mock;
+mod types;
 
 #[cfg(test)]
 mod tests;
@@ -17,13 +21,12 @@ mod benchmarking;
 
 #[frame_support::pallet]
 pub mod pallet {
-	use frame_support::{pallet_prelude::*, traits::fungible};
+	use super::*;
+	use frame_support::traits::fungible;
 	use frame_system::pallet_prelude::*;
 
 	#[pallet::pallet]
 	pub struct Pallet<T>(_);
-
-	pub type ProposalId = u32;
 
 	/// Configure the pallet by specifying the parameters and types on which it depends.
 	#[pallet::config]
@@ -38,6 +41,26 @@ pub mod pallet {
 			+ fungible::hold::Mutate<Self::AccountId>
 			+ fungible::freeze::Inspect<Self::AccountId>
 			+ fungible::freeze::Mutate<Self::AccountId>;
+
+		/// Maximum offchain data length.
+		#[pallet::constant]
+		type ProposalOffchainDataLimit: Get<u32>;
+
+		/// Maximum number of accounts that can be stored inside the account list.
+		#[pallet::constant]
+		type AccountSizeLimit: Get<u32>;
+
+		/// Maximum duration for a proposal.
+		#[pallet::constant]
+		type ProposalMaximumDuration: Get<u32>;
+
+		/// Minimum duration for a proposal.
+		#[pallet::constant]
+		type ProposalMinimumDuration: Get<u32>;
+
+		/// Maximum delay for a proposal to start.
+		#[pallet::constant]
+		type ProposalDelayLimit: Get<u32>;
 	}
 
 	// The pallet's runtime storage items.
@@ -49,13 +72,40 @@ pub mod pallet {
 	pub type RegisteredVoters<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, (), OptionQuery>;
 
+	#[pallet::storage]
+	#[pallet::getter(fn next_proposal_id)]
+	pub type NextProposalId<T: Config> = StorageValue<_, u32, ValueQuery>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn proposals)]
+	pub type Proposals<T: Config> = StorageMap<
+		_,
+		Blake2_128Concat,
+		ProposalId,
+		ProposalData<T, T::AccountId, T::AccountSizeLimit, T::ProposalOffchainDataLimit>,
+		OptionQuery,
+	>;
+
 	// Pallets use events to inform users when important changes are made.
 	// https://docs.substrate.io/main-docs/build/events-errors/
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		NewVoterRegistered { who: T::AccountId },
-		VoterUnregistered { who: T::AccountId },
+		NewVoterRegistered {
+			who: T::AccountId,
+		},
+		VoterUnregistered {
+			who: T::AccountId,
+		},
+		NewProposal {
+			proposal_id: ProposalId,
+			offchain_data: BoundedVec<u8, T::ProposalOffchainDataLimit>,
+			creator: T::AccountId,
+			kind: ProposalKind,
+			account_list: Option<BoundedVec<T::AccountId, T::AccountSizeLimit>>,
+			start_block: BlockNumberFor<T>,
+			end_block: BlockNumberFor<T>,
+		},
 	}
 
 	// Errors inform users that something went wrong.
@@ -65,8 +115,16 @@ pub mod pallet {
 		OriginNoPermission,
 		/// A user is trying to vote, but is not registered in the `RegisteredVoters` storage.
 		VoterNotRegistered,
-		/// Errors should have helpful documentation associated with them.
-		StorageOverflow,
+		/// A proposal cannot start in the past
+		ProposalCannotStartInThePast,
+		/// A proposal cannot end before starting
+		ProposalCannotFinishBeforeStarting,
+		/// The proposal duration is too long
+		ProposalDurationIsTooLong,
+		/// The proposal duration is too short
+		ProposalDurationIsTooShort,
+		/// The delay for a proposal to start is too far away
+		ProposalStartIsTooFarAway,
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -94,6 +152,67 @@ pub mod pallet {
 			Ok(())
 		}
 
+		#[pallet::call_index(2)]
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		pub fn create_proposal(
+			origin: OriginFor<T>,
+			offchain_data: BoundedVec<u8, T::ProposalOffchainDataLimit>,
+			kind: ProposalKind,
+			account_list: Option<BoundedVec<T::AccountId, T::AccountSizeLimit>>,
+			start_block: BlockNumberFor<T>,
+			end_block: BlockNumberFor<T>,
+		) -> DispatchResult {
+			let who = ensure_signed(origin)?;
+			ensure!(
+				RegisteredVoters::<T>::get(who.clone()).is_some(),
+				Error::<T>::VoterNotRegistered
+			);
+
+			let current_block = Pallet::<T>::get_current_block_number();
+			ensure!(current_block <= start_block, Error::<T>::ProposalCannotStartInThePast);
+			ensure!(start_block < end_block, Error::<T>::ProposalCannotFinishBeforeStarting);
+
+			let duration = end_block.saturating_sub(start_block);
+			let buffer = start_block.saturating_sub(current_block);
+			ensure!(
+				buffer <= T::ProposalDelayLimit::get().into(),
+				Error::<T>::ProposalStartIsTooFarAway
+			);
+			ensure!(
+				duration >= T::ProposalMinimumDuration::get().into(),
+				Error::<T>::ProposalDurationIsTooShort
+			);
+			ensure!(
+				duration <= T::ProposalMaximumDuration::get().into(),
+				Error::<T>::ProposalDurationIsTooLong
+			);
+
+			let proposal_id = Pallet::<T>::get_next_proposal_id();
+			let proposal = ProposalData::new(
+				offchain_data.clone(),
+				kind.clone(),
+				who.clone(),
+				account_list.clone(),
+				start_block,
+				end_block,
+			);
+
+			Proposals::<T>::insert(proposal_id, proposal);
+
+			let event = Event::NewProposal {
+				proposal_id,
+				offchain_data,
+				creator: who,
+				kind,
+				account_list,
+				start_block,
+				end_block,
+			};
+			Self::deposit_event(event);
+
+			Ok(())
+		}
+
 		// An example dispatchable that may throw a custom error.
 		// #[pallet::call_index(1)]
 		// #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1).ref_time())]
@@ -113,6 +232,19 @@ pub mod pallet {
 		// 		},
 		// 	}
 		// }
+	}
+}
+
+impl<T: Config> Pallet<T> {
+	fn get_next_proposal_id() -> ProposalId {
+		let proposal_id = NextProposalId::<T>::get();
+		let next_id = proposal_id.checked_add(1).expect("Overflow u32 check; qed.");
+		NextProposalId::<T>::put(next_id);
+		proposal_id
+	}
+
+	fn get_current_block_number() -> BlockNumberFor<T> {
+		frame_system::Pallet::<T>::block_number()
 	}
 }
 

@@ -1,5 +1,8 @@
 use crate as pallet_voting;
-use frame_support::traits::{ConstU128, ConstU16, ConstU32, ConstU64};
+use frame_support::{
+	parameter_types,
+	traits::{ConstU128, ConstU16, ConstU32, ConstU64},
+};
 use sp_core::H256;
 use sp_runtime::{
 	traits::{BlakeTwo256, IdentityLookup},
@@ -8,6 +11,13 @@ use sp_runtime::{
 
 type Block = frame_system::mocking::MockBlock<Test>;
 type Balance = u128;
+pub type BlockNumber = u32;
+
+pub const PROPOSAL_ACCOUNT_SIZE_LIMIT: u32 = 1000;
+pub const PROPOSAL_OFFCHAIN_DATA_LIMIT: u32 = 150;
+pub const PROPOSAL_MAXIMUM_DURATION: BlockNumber = 1000;
+pub const PROPOSAL_MINIMUM_DURATION: BlockNumber = 100;
+pub const PROPOSAL_DELAY_LIMIT: BlockNumber = 100;
 
 // Configure a mock runtime to test the pallet.
 frame_support::construct_runtime!(
@@ -61,9 +71,22 @@ impl pallet_balances::Config for Test {
 	type MaxFreezes = ConstU32<10>;
 }
 
+parameter_types! {
+	pub const AccountSizeLimit: u32 = PROPOSAL_ACCOUNT_SIZE_LIMIT;
+	pub const ProposalOffchainDataLimit: u32 = PROPOSAL_OFFCHAIN_DATA_LIMIT;
+	pub const ProposalMaximumDuration: u32 = PROPOSAL_MAXIMUM_DURATION;
+	pub const ProposalMinimumDuration: u32 = PROPOSAL_MINIMUM_DURATION;
+	pub const ProposalDelayLimit: u32 = PROPOSAL_DELAY_LIMIT;
+}
+
 impl pallet_voting::Config for Test {
 	type RuntimeEvent = RuntimeEvent;
 	type NativeBalance = Balances;
+	type AccountSizeLimit = AccountSizeLimit;
+	type ProposalOffchainDataLimit = ProposalOffchainDataLimit;
+	type ProposalMaximumDuration = ProposalMaximumDuration;
+	type ProposalMinimumDuration = ProposalMinimumDuration;
+	type ProposalDelayLimit = ProposalDelayLimit;
 }
 
 // Build genesis storage according to the mock runtime.

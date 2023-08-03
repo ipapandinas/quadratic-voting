@@ -25,7 +25,13 @@ use frame_support::{
 /// A minimal interface to test the functionality of the Voting pallet.
 pub trait VotingInterface {
 	/// The type which can be used to identify accounts.
-	type AccountId: Parameter + Member + MaybeSerializeDeserialize + Debug + Ord + MaxEncodedLen;
+	type AccountId: Parameter
+		+ Member
+		+ MaybeSerializeDeserialize
+		+ Debug
+		+ Ord
+		+ MaxEncodedLen
+		+ Clone;
 	/// The type representing the balance users can vote with.
 	type VotingBalance: BalanceTrait;
 	/// The type representing a unique ID for a proposal.

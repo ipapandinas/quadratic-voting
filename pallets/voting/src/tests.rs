@@ -1,5 +1,13 @@
-use crate::{mock::*, Error, Event};
-use frame_support::{assert_noop, assert_ok};
+use crate::{
+	mock::{self, *},
+	pallet::{self as pallet_voting},
+	Error, Event, ProposalKind,
+};
+use frame_support::{assert_noop, assert_ok, BoundedVec};
+use frame_system::RawOrigin;
+use sp_runtime::DispatchResult;
+
+const ALICE: u64 = 0;
 
 mod register_voter {
 	use super::*;
@@ -49,5 +57,192 @@ mod unregister_voter {
 			assert_eq!(Voting::registered_voters(0), None);
 			System::assert_last_event(Event::VoterUnregistered { who: 0 }.into());
 		})
+	}
+}
+
+mod create_proposal {
+	use crate::ProposalData;
+
+	use super::*;
+
+	fn setup() {
+		assert_ok!(Voting::register_voter(RuntimeOrigin::root(), ALICE));
+	}
+
+	#[test]
+	fn new_proposal() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 20;
+			let end_block = 120;
+			setup();
+
+			let proposal_data: ProposalData<
+				Test,
+				u64,
+				AccountSizeLimit,
+				ProposalOffchainDataLimit,
+			> = ProposalData::new(
+				BoundedVec::default(),
+				ProposalKind::default(),
+				ALICE,
+				Some(BoundedVec::default()),
+				start_block,
+				end_block,
+			);
+
+			// Execution
+			assert_ok!(Voting::create_proposal(
+				RuntimeOrigin::signed(proposal_data.creator),
+				proposal_data.clone().offchain_data,
+				proposal_data.kind,
+				proposal_data.clone().account_list,
+				proposal_data.start_block,
+				proposal_data.end_block
+			));
+
+			// Storage
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			let proposal = Voting::proposals(proposal_id);
+
+			assert_eq!(proposal, Some(proposal_data.clone()));
+
+			// Event
+			System::assert_last_event(
+				Event::NewProposal {
+					proposal_id,
+					offchain_data: proposal_data.offchain_data,
+					creator: ALICE,
+					kind: proposal_data.kind,
+					account_list: proposal_data.account_list,
+					start_block,
+					end_block,
+				}
+				.into(),
+			);
+		})
+	}
+
+	#[test]
+	fn cannot_start_proposal_in_the_past() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			setup();
+
+			// Execution
+			assert_noop!(
+				ProposalBuilder::new().start(0).execute(),
+				Error::<Test>::ProposalCannotStartInThePast
+			);
+		})
+	}
+
+	#[test]
+	fn cannot_finish_proposal_before_starting() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			setup();
+
+			// Execution
+			assert_noop!(
+				ProposalBuilder::new().end(0).execute(),
+				Error::<Test>::ProposalCannotFinishBeforeStarting
+			);
+		})
+	}
+
+	#[test]
+	fn too_much_delay_proposal() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			setup();
+
+			let max_delay = <Test as pallet_voting::Config>::ProposalDelayLimit::get();
+			// Execution
+			assert_noop!(
+				ProposalBuilder::new()
+					.start(u32::try_from(System::block_number()).unwrap_or(0) + max_delay + 1)
+					.execute(),
+				Error::<Test>::ProposalStartIsTooFarAway
+			);
+		})
+	}
+
+	#[test]
+	fn too_long_duration_proposal() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			setup();
+
+			let max_duration = <Test as pallet_voting::Config>::ProposalMaximumDuration::get();
+			// Execution
+			assert_noop!(
+				ProposalBuilder::new()
+					.end(u32::try_from(System::block_number()).unwrap_or(0) + max_duration + 1)
+					.execute(),
+				Error::<Test>::ProposalDurationIsTooLong
+			);
+		})
+	}
+
+	#[test]
+	fn too_short_duration_proposal() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			setup();
+
+			let min_duration = <Test as pallet_voting::Config>::ProposalMinimumDuration::get();
+			// Execution
+			assert_noop!(
+				ProposalBuilder::new()
+					.end(u32::try_from(System::block_number()).unwrap_or(0) + min_duration - 1)
+					.execute(),
+				Error::<Test>::ProposalDurationIsTooShort
+			);
+		})
+	}
+}
+
+pub struct ProposalBuilder {
+	pub origin: mock::RuntimeOrigin,
+	pub offchain_data: BoundedVec<u8, ProposalOffchainDataLimit>,
+	pub kind: ProposalKind,
+	pub account_list: Option<BoundedVec<u64, AccountSizeLimit>>,
+	pub start_block: BlockNumber,
+	pub end_block: BlockNumber,
+}
+
+impl ProposalBuilder {
+	pub fn new() -> ProposalBuilder {
+		let max_duration = <Test as pallet_voting::Config>::ProposalMaximumDuration::get();
+		Self {
+			origin: RawOrigin::Signed(ALICE).into(),
+			offchain_data: BoundedVec::default(),
+			kind: ProposalKind::default(),
+			account_list: Some(BoundedVec::default()),
+			start_block: u32::try_from(System::block_number()).unwrap_or(0),
+			end_block: u32::try_from(System::block_number()).unwrap_or(0) + max_duration - 1,
+		}
+	}
+
+	pub fn start(mut self, start_block: BlockNumber) -> Self {
+		self.start_block = start_block;
+		self
+	}
+
+	pub fn end(mut self, end_block: BlockNumber) -> Self {
+		self.end_block = end_block;
+		self
+	}
+
+	pub fn execute(self) -> DispatchResult {
+		Voting::create_proposal(
+			self.origin,
+			self.offchain_data,
+			self.kind,
+			self.account_list,
+			self.start_block as u64,
+			self.end_block as u64,
+		)
 	}
 }

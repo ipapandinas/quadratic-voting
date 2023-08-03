@@ -300,10 +300,29 @@ impl pallet_assets::Config for Runtime {
 	type BenchmarkHelper = ();
 }
 
+pub const PROPOSAL_ACCOUNT_SIZE_LIMIT: u32 = 1000;
+pub const PROPOSAL_OFFCHAIN_DATA_LIMIT: u32 = 150;
+pub const PROPOSAL_MAXIMUM_DURATION: BlockNumber = 1000;
+pub const PROPOSAL_MINIMUM_DURATION: BlockNumber = 100;
+pub const PROPOSAL_DELAY_LIMIT: BlockNumber = 100;
+
+parameter_types! {
+	pub const AccountSizeLimit: u32 = PROPOSAL_ACCOUNT_SIZE_LIMIT;
+	pub const ProposalOffchainDataLimit: u32 = PROPOSAL_OFFCHAIN_DATA_LIMIT;
+	pub const ProposalMaximumDuration: BlockNumber = PROPOSAL_MAXIMUM_DURATION;
+	pub const ProposalMinimumDuration: BlockNumber = PROPOSAL_MINIMUM_DURATION;
+	pub const ProposalDelayLimit: BlockNumber = PROPOSAL_DELAY_LIMIT;
+}
+
 /// Configure the pallet-voting in pallets/voting.
 impl pallet_voting::Config for Runtime {
 	type RuntimeEvent = RuntimeEvent;
 	type NativeBalance = Balances;
+	type AccountSizeLimit = AccountSizeLimit;
+	type ProposalOffchainDataLimit = ProposalOffchainDataLimit;
+	type ProposalMaximumDuration = ProposalMaximumDuration;
+	type ProposalMinimumDuration = ProposalMinimumDuration;
+	type ProposalDelayLimit = ProposalDelayLimit;
 }
 
 pub struct AuthorityToAccount;
