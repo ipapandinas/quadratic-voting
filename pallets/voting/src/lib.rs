@@ -113,6 +113,10 @@ pub mod pallet {
 			proposal_id: ProposalId,
 			ratio: (u32, u32),
 		},
+		AccountListSet {
+			proposal_id: ProposalId,
+			account_list: Option<BoundedVec<T::AccountId, T::AccountSizeLimit>>,
+		},
 	}
 
 	// Errors inform users that something went wrong.
@@ -259,6 +263,33 @@ pub mod pallet {
 
 			Proposals::<T>::remove(proposal_id);
 			Self::deposit_event(Event::<T>::ProposalClosed { proposal_id, ratio: proposal.ratio });
+			Ok(())
+		}
+
+		#[pallet::call_index(5)]
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		pub fn set_account_list(
+			origin: OriginFor<T>,
+			proposal_id: ProposalId,
+			account_list: Option<BoundedVec<T::AccountId, T::AccountSizeLimit>>,
+		) -> DispatchResult {
+			let caller = ensure_signed_or_root(origin)?;
+
+			let current_block = Pallet::<T>::get_current_block_number();
+			let proposal =
+				Proposals::<T>::get(proposal_id).ok_or(Error::<T>::ProposalDoesNotExist)?;
+
+			ensure!(
+				(caller.is_none() || proposal.is_creator(&caller.unwrap())),
+				Error::<T>::OriginNoPermission
+			);
+			ensure!(!proposal.has_started(&current_block), Error::<T>::ProposalHasAlreadyStarted);
+
+			Proposals::<T>::insert(
+				proposal_id,
+				ProposalData { account_list: account_list.clone(), ..proposal },
+			);
+			Self::deposit_event(Event::<T>::AccountListSet { proposal_id, account_list });
 			Ok(())
 		}
 	}

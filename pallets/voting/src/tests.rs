@@ -238,8 +238,6 @@ mod cancel_proposal {
 
 			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
 
-			System::set_block_number(100);
-
 			let proposal_id = Voting::get_next_proposal_id() - 1;
 			assert_noop!(
 				Voting::cancel_proposal(RuntimeOrigin::signed(ALICE), proposal_id),
@@ -258,9 +256,9 @@ mod cancel_proposal {
 
 			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
 
-			let proposal_id = Voting::get_next_proposal_id() - 1;
+			let next_proposal_id = Voting::get_next_proposal_id();
 			assert_noop!(
-				Voting::cancel_proposal(RuntimeOrigin::signed(ALICE), proposal_id + 1),
+				Voting::cancel_proposal(RuntimeOrigin::signed(ALICE), next_proposal_id),
 				Error::<Test>::ProposalDoesNotExist
 			);
 		})
@@ -347,10 +345,122 @@ mod close_proposal {
 
 			System::set_block_number(200);
 
-			let proposal_id = Voting::get_next_proposal_id() - 1;
+			let next_proposal_id = Voting::get_next_proposal_id();
 			assert_noop!(
-				Voting::close_proposal(RuntimeOrigin::signed(BOB), proposal_id + 1),
+				Voting::close_proposal(RuntimeOrigin::signed(BOB), next_proposal_id),
 				Error::<Test>::ProposalDoesNotExist
+			);
+		})
+	}
+}
+
+mod set_account_list {
+	use crate::ProposalData;
+
+	use super::*;
+
+	#[test]
+	fn set_account_list() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 10;
+			let end_block = 200;
+			setup();
+
+			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			let raw_proposal = Voting::proposals(proposal_id);
+			assert!(raw_proposal.is_some());
+
+			let new_account_list = BoundedVec::try_from(vec![BOB]).unwrap();
+			assert_ok!(Voting::set_account_list(
+				RuntimeOrigin::signed(ALICE),
+				proposal_id,
+				Some(new_account_list.clone())
+			));
+
+			// Storage
+			let proposal = Voting::proposals(proposal_id);
+			assert_eq!(
+				proposal,
+				Some(ProposalData {
+					account_list: Some(new_account_list.clone()),
+					..raw_proposal.unwrap()
+				})
+			);
+
+			// Event
+			System::assert_last_event(
+				Event::AccountListSet { proposal_id, account_list: Some(new_account_list) }.into(),
+			);
+		})
+	}
+
+	#[test]
+	fn cannot_set_account_list_after_start() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 1;
+			let end_block = 200;
+			setup();
+
+			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			let new_account_list = BoundedVec::try_from(vec![BOB]).unwrap();
+			assert_noop!(
+				Voting::set_account_list(
+					RuntimeOrigin::signed(ALICE),
+					proposal_id,
+					Some(new_account_list)
+				),
+				Error::<Test>::ProposalHasAlreadyStarted
+			);
+		})
+	}
+
+	#[test]
+	fn cannot_cancel_proposal_not_existing() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 1;
+			let end_block = 200;
+			setup();
+
+			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+
+			let next_proposal_id = Voting::get_next_proposal_id();
+			let new_account_list = BoundedVec::try_from(vec![BOB]).unwrap();
+			assert_noop!(
+				Voting::set_account_list(
+					RuntimeOrigin::signed(ALICE),
+					next_proposal_id,
+					Some(new_account_list)
+				),
+				Error::<Test>::ProposalDoesNotExist
+			);
+		})
+	}
+
+	#[test]
+	fn works_only_if_root_or_creator() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 10;
+			let end_block = 200;
+			setup();
+
+			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			let new_account_list = BoundedVec::try_from(vec![BOB]).unwrap();
+			assert_noop!(
+				Voting::set_account_list(
+					RuntimeOrigin::signed(BOB),
+					proposal_id,
+					Some(new_account_list)
+				),
+				Error::<Test>::OriginNoPermission
 			);
 		})
 	}
