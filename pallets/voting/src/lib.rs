@@ -7,7 +7,7 @@ use frame_system::pallet_prelude::BlockNumberFor;
 /// Learn more about FRAME and the core library of Substrate FRAME pallets:
 /// <https://docs.substrate.io/reference/frame-pallets/>
 pub use pallet::*;
-pub use types::{ProposalData, ProposalId, ProposalKind};
+pub use types::{ProposalData, ProposalId, ProposalKind, VoteRatio};
 
 #[cfg(test)]
 mod mock;
@@ -106,6 +106,13 @@ pub mod pallet {
 			start_block: BlockNumberFor<T>,
 			end_block: BlockNumberFor<T>,
 		},
+		ProposalCancelled {
+			proposal_id: ProposalId,
+		},
+		ProposalClosed {
+			proposal_id: ProposalId,
+			ratio: (u32, u32),
+		},
 	}
 
 	// Errors inform users that something went wrong.
@@ -115,6 +122,12 @@ pub mod pallet {
 		OriginNoPermission,
 		/// A user is trying to vote, but is not registered in the `RegisteredVoters` storage.
 		VoterNotRegistered,
+		/// A proposal does not exist in storage
+		ProposalDoesNotExist,
+		/// A proposal has already started
+		ProposalHasAlreadyStarted,
+		/// A proposal has not ended yet
+		ProposalHasNotEndedYet,
 		/// A proposal cannot start in the past
 		ProposalCannotStartInThePast,
 		/// A proposal cannot end before starting
@@ -162,9 +175,9 @@ pub mod pallet {
 			start_block: BlockNumberFor<T>,
 			end_block: BlockNumberFor<T>,
 		) -> DispatchResult {
-			let who = ensure_signed(origin)?;
+			let caller = ensure_signed(origin)?;
 			ensure!(
-				RegisteredVoters::<T>::get(who.clone()).is_some(),
+				RegisteredVoters::<T>::get(caller.clone()).is_some(),
 				Error::<T>::VoterNotRegistered
 			);
 
@@ -191,7 +204,7 @@ pub mod pallet {
 			let proposal = ProposalData::new(
 				offchain_data.clone(),
 				kind.clone(),
-				who.clone(),
+				caller.clone(),
 				account_list.clone(),
 				start_block,
 				end_block,
@@ -202,7 +215,7 @@ pub mod pallet {
 			let event = Event::NewProposal {
 				proposal_id,
 				offchain_data,
-				creator: who,
+				creator: caller,
 				kind,
 				account_list,
 				start_block,
@@ -213,25 +226,41 @@ pub mod pallet {
 			Ok(())
 		}
 
-		// An example dispatchable that may throw a custom error.
-		// #[pallet::call_index(1)]
-		// #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1).ref_time())]
-		// pub fn cause_error(origin: OriginFor<T>) -> DispatchResult {
-		// 	let _who = ensure_signed(origin)?;
+		#[pallet::call_index(3)]
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		pub fn cancel_proposal(origin: OriginFor<T>, proposal_id: ProposalId) -> DispatchResult {
+			let caller = ensure_signed_or_root(origin)?;
 
-		// 	// Read a value from storage.
-		// 	match <Something<T>>::get() {
-		// 		// Return an error if the value has not been set.
-		// 		None => Err(Error::<T>::NoneValue.into()),
-		// 		Some(old) => {
-		// 			// Increment the value read from storage; will error in the event of overflow.
-		// 			let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
-		// 			// Update the value in storage with the incremented result.
-		// 			<Something<T>>::put(new);
-		// 			Ok(())
-		// 		},
-		// 	}
-		// }
+			let current_block = Pallet::<T>::get_current_block_number();
+			let proposal =
+				Proposals::<T>::get(proposal_id).ok_or(Error::<T>::ProposalDoesNotExist)?;
+
+			ensure!(
+				(caller.is_none() || proposal.is_creator(&caller.unwrap())),
+				Error::<T>::OriginNoPermission
+			);
+			ensure!(!proposal.has_started(&current_block), Error::<T>::ProposalHasAlreadyStarted);
+
+			Proposals::<T>::remove(proposal_id);
+			Self::deposit_event(Event::<T>::ProposalCancelled { proposal_id });
+			Ok(())
+		}
+
+		#[pallet::call_index(4)]
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		pub fn close_proposal(origin: OriginFor<T>, proposal_id: ProposalId) -> DispatchResult {
+			ensure_signed(origin)?;
+
+			let current_block = Pallet::<T>::get_current_block_number();
+			let proposal =
+				Proposals::<T>::get(proposal_id).ok_or(Error::<T>::ProposalDoesNotExist)?;
+
+			ensure!(proposal.has_ended(&current_block), Error::<T>::ProposalHasNotEndedYet);
+
+			Proposals::<T>::remove(proposal_id);
+			Self::deposit_event(Event::<T>::ProposalClosed { proposal_id, ratio: proposal.ratio });
+			Ok(())
+		}
 	}
 }
 

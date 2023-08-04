@@ -10,6 +10,7 @@ use scale_info::TypeInfo;
 
 // pub type BlockNumber = u32;
 pub type ProposalId = u32;
+pub type VoteRatio = (u32, u32);
 
 #[derive(
 	PartialEq, Eq, Copy, Clone, RuntimeDebug, Encode, Decode, Default, TypeInfo, MaxEncodedLen,
@@ -37,7 +38,7 @@ where
 	/// The first item represents the number of 'aye' votes.
 	/// The second item represents the total number of votes.
 	/// A poposal gets majority when the are more 'ayes' votes that the half number of total votes when closing the proposal.  
-	pub ratio: (u32, u32),
+	pub ratio: VoteRatio,
 	/// The proposal kind: 'Public' or 'Private'.
 	/// A public proposal is open for all registered voters to vote. The proposal can be closed by the creator once the end_block is reached.
 	/// A private proposal is similar to a quorum vote. The proposal is close as soon as majority is get among the number of registered voters allowed to vote in the account list. The proposal is closed and reject if majority is not reached when passing the ending block.
@@ -70,6 +71,26 @@ where
 		start_block: BlockNumberFor<T>,
 		end_block: BlockNumberFor<T>,
 	) -> ProposalData<T, AccountId, AccountSizeLimit, ProposalOffchainDataLimit> {
-		Self { offchain_data, ratio: (0, 0), kind, creator, account_list, start_block, end_block }
+		Self {
+			offchain_data,
+			ratio: VoteRatio::default(),
+			kind,
+			creator,
+			account_list,
+			start_block,
+			end_block,
+		}
+	}
+
+	pub fn is_creator(&self, who: &AccountId) -> bool {
+		self.creator == *who
+	}
+
+	pub fn has_started(&self, block: &BlockNumberFor<T>) -> bool {
+		self.start_block.le(block)
+	}
+
+	pub fn has_ended(&self, block: &BlockNumberFor<T>) -> bool {
+		self.end_block.le(block)
 	}
 }

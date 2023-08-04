@@ -8,6 +8,7 @@ use frame_system::RawOrigin;
 use sp_runtime::DispatchResult;
 
 const ALICE: u64 = 0;
+const BOB: u64 = 1;
 
 mod register_voter {
 	use super::*;
@@ -60,14 +61,13 @@ mod unregister_voter {
 	}
 }
 
+fn setup() {
+	assert_ok!(Voting::register_voter(RuntimeOrigin::root(), ALICE));
+}
+
 mod create_proposal {
-	use crate::ProposalData;
-
 	use super::*;
-
-	fn setup() {
-		assert_ok!(Voting::register_voter(RuntimeOrigin::root(), ALICE));
-	}
+	use crate::ProposalData;
 
 	#[test]
 	fn new_proposal() {
@@ -198,6 +198,159 @@ mod create_proposal {
 					.end(u32::try_from(System::block_number()).unwrap_or(0) + min_duration - 1)
 					.execute(),
 				Error::<Test>::ProposalDurationIsTooShort
+			);
+		})
+	}
+}
+
+mod cancel_proposal {
+	use super::*;
+
+	#[test]
+	fn cancel_proposal() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 10;
+			let end_block = 200;
+			setup();
+
+			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			assert_ok!(Voting::cancel_proposal(RuntimeOrigin::signed(ALICE), proposal_id));
+
+			// Storage
+			let proposal = Voting::proposals(proposal_id);
+			assert_eq!(proposal, None);
+
+			// Event
+			System::assert_last_event(Event::ProposalCancelled { proposal_id }.into());
+		})
+	}
+
+	#[test]
+	fn cannot_cancel_proposal_after_start() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 1;
+			let end_block = 200;
+			setup();
+
+			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+
+			System::set_block_number(100);
+
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			assert_noop!(
+				Voting::cancel_proposal(RuntimeOrigin::signed(ALICE), proposal_id),
+				Error::<Test>::ProposalHasAlreadyStarted
+			);
+		})
+	}
+
+	#[test]
+	fn cannot_cancel_proposal_not_existing() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 1;
+			let end_block = 200;
+			setup();
+
+			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			assert_noop!(
+				Voting::cancel_proposal(RuntimeOrigin::signed(ALICE), proposal_id + 1),
+				Error::<Test>::ProposalDoesNotExist
+			);
+		})
+	}
+
+	#[test]
+	fn works_only_if_root_or_creator() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 10;
+			let end_block = 200;
+			setup();
+
+			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			assert_noop!(
+				Voting::cancel_proposal(RuntimeOrigin::signed(BOB), proposal_id),
+				Error::<Test>::OriginNoPermission
+			);
+		})
+	}
+}
+
+mod close_proposal {
+	use super::*;
+	use crate::VoteRatio;
+
+	#[test]
+	fn close_proposal() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 1;
+			let end_block = 200;
+			setup();
+
+			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+
+			System::set_block_number(200);
+
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			assert_ok!(Voting::close_proposal(RuntimeOrigin::signed(BOB), proposal_id));
+
+			// Storage
+			let proposal = Voting::proposals(proposal_id);
+			assert_eq!(proposal, None);
+
+			// Event
+			System::assert_last_event(
+				Event::ProposalClosed { proposal_id, ratio: VoteRatio::default() }.into(),
+			);
+		})
+	}
+
+	#[test]
+	fn cannot_close_proposal_before_end() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 1;
+			let end_block = 200;
+			setup();
+
+			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+
+			System::set_block_number(199);
+
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			assert_noop!(
+				Voting::close_proposal(RuntimeOrigin::signed(BOB), proposal_id),
+				Error::<Test>::ProposalHasNotEndedYet
+			);
+		})
+	}
+
+	#[test]
+	fn cannot_close_proposal_not_existing() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 1;
+			let end_block = 200;
+			setup();
+
+			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+
+			System::set_block_number(200);
+
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			assert_noop!(
+				Voting::close_proposal(RuntimeOrigin::signed(BOB), proposal_id + 1),
+				Error::<Test>::ProposalDoesNotExist
 			);
 		})
 	}
