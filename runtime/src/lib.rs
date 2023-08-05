@@ -323,6 +323,7 @@ impl pallet_voting::Config for Runtime {
 	type ProposalMaximumDuration = ProposalMaximumDuration;
 	type ProposalMinimumDuration = ProposalMinimumDuration;
 	type ProposalDelayLimit = ProposalDelayLimit;
+	type FreezeIdForPallet = ();
 }
 
 pub struct AuthorityToAccount;

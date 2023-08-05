@@ -1,13 +1,12 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-use frame_support::sp_runtime::Saturating;
+use frame_support::sp_runtime::traits::Zero;
+use frame_support::sp_runtime::{SaturatedConversion, Saturating};
 use frame_support::{dispatch::Vec, pallet_prelude::*, traits::fungible};
 use frame_system::pallet_prelude::BlockNumberFor;
-/// Edit this file to define custom logic or remove it if it is not needed.
-/// Learn more about FRAME and the core library of Substrate FRAME pallets:
-/// <https://docs.substrate.io/reference/frame-pallets/>
+
 pub use pallet::*;
-pub use types::{ProposalData, ProposalId, ProposalKind, VoteRatio};
+pub use types::{ProposalData, ProposalId, ProposalKind, VoteInfo, VoteRatio};
 
 #[cfg(test)]
 mod mock;
@@ -22,11 +21,18 @@ mod benchmarking;
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
-	use frame_support::traits::fungible;
+	use frame_support::traits::fungible::{InspectFreeze, MutateFreeze};
 	use frame_system::pallet_prelude::*;
 
 	#[pallet::pallet]
 	pub struct Pallet<T>(_);
+
+	pub type BalanceOf<T> = <<T as Config>::NativeBalance as fungible::Inspect<
+		<T as frame_system::Config>::AccountId,
+	>>::Balance;
+	pub type FreezeIdOf<T> = <<T as Config>::NativeBalance as fungible::freeze::Inspect<
+		<T as frame_system::Config>::AccountId,
+	>>::Id;
 
 	/// Configure the pallet by specifying the parameters and types on which it depends.
 	#[pallet::config]
@@ -41,6 +47,10 @@ pub mod pallet {
 			+ fungible::hold::Mutate<Self::AccountId>
 			+ fungible::freeze::Inspect<Self::AccountId>
 			+ fungible::freeze::Mutate<Self::AccountId>;
+
+		/// Freeze identifier used by the pallet
+		#[pallet::constant]
+		type FreezeIdForPallet: Get<FreezeIdOf<Self>>;
 
 		/// Maximum offchain data length.
 		#[pallet::constant]
@@ -63,19 +73,18 @@ pub mod pallet {
 		type ProposalDelayLimit: Get<u32>;
 	}
 
-	// The pallet's runtime storage items.
-	// https://docs.substrate.io/main-docs/build/runtime-storage/
+	/// All well-known voters registered to participate in proposal voting
 	#[pallet::storage]
 	#[pallet::getter(fn registered_voters)]
-	// Learn more about declaring storage items:
-	// https://docs.substrate.io/main-docs/build/runtime-storage/#declaring-storage-items
 	pub type RegisteredVoters<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, (), OptionQuery>;
 
+	/// The ID that will be used by the next proposal created
 	#[pallet::storage]
 	#[pallet::getter(fn next_proposal_id)]
 	pub type NextProposalId<T: Config> = StorageValue<_, u32, ValueQuery>;
 
+	/// All proposals staged or in progress
 	#[pallet::storage]
 	#[pallet::getter(fn proposals)]
 	pub type Proposals<T: Config> = StorageMap<
@@ -83,6 +92,20 @@ pub mod pallet {
 		Blake2_128Concat,
 		ProposalId,
 		ProposalData<T, T::AccountId, T::AccountSizeLimit, T::ProposalOffchainDataLimit>,
+		OptionQuery,
+	>;
+
+	/// All votes for proposals in progress.
+	/// The key is the proposal ID and the voter ID, to ensure it's unique.
+	#[pallet::storage]
+	#[pallet::getter(fn get_votes)]
+	pub type Votes<T: Config> = StorageDoubleMap<
+		_,
+		Blake2_256,
+		T::AccountId,
+		Blake2_256,
+		ProposalId,
+		VoteInfo,
 		OptionQuery,
 	>;
 
@@ -111,18 +134,30 @@ pub mod pallet {
 		},
 		ProposalClosed {
 			proposal_id: ProposalId,
-			ratio: (u32, u32),
+			ratio: (u128, u128),
 		},
 		AccountListSet {
 			proposal_id: ProposalId,
 			account_list: Option<BoundedVec<T::AccountId, T::AccountSizeLimit>>,
+		},
+		/// A new vote was added to an in progress proposal
+		VoteAdded {
+			proposal_id: ProposalId,
+			voter: T::AccountId,
+			aye: bool,
+			power: u128,
+		},
+		/// A vote was removed from an in progress proposal
+		VoteDropped {
+			proposal_id: ProposalId,
+			voter: T::AccountId,
 		},
 	}
 
 	// Errors inform users that something went wrong.
 	#[pallet::error]
 	pub enum Error<T> {
-		/// Origin has no permission to operate on the registered voter
+		/// Origin has no permission to operate
 		OriginNoPermission,
 		/// A user is trying to vote, but is not registered in the `RegisteredVoters` storage.
 		VoterNotRegistered,
@@ -130,6 +165,10 @@ pub mod pallet {
 		ProposalDoesNotExist,
 		/// A proposal has already started
 		ProposalHasAlreadyStarted,
+		/// A proposal has already ended
+		ProposalHasAlreadyEnded,
+		/// A proposal has not started yet
+		ProposalHasNotStartedYet,
 		/// A proposal has not ended yet
 		ProposalHasNotEndedYet,
 		/// A proposal cannot start in the past
@@ -142,6 +181,8 @@ pub mod pallet {
 		ProposalDurationIsTooShort,
 		/// The delay for a proposal to start is too far away
 		ProposalStartIsTooFarAway,
+		/// The voter has insufficient free funds to vote with power
+		InsufficientBalance,
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -166,6 +207,9 @@ pub mod pallet {
 			ensure!((caller.is_none() || caller.unwrap() == who), Error::<T>::OriginNoPermission);
 			RegisteredVoters::<T>::remove(&who);
 			Self::deposit_event(Event::<T>::VoterUnregistered { who });
+
+			// TODO: clean up votes & adjust ratio
+
 			Ok(())
 		}
 
@@ -203,6 +247,8 @@ pub mod pallet {
 				duration <= T::ProposalMaximumDuration::get().into(),
 				Error::<T>::ProposalDurationIsTooLong
 			);
+
+			// TODO: ensure account_list not empty for private proposals?
 
 			let proposal_id = Pallet::<T>::get_next_proposal_id();
 			let proposal = ProposalData::new(
@@ -252,7 +298,10 @@ pub mod pallet {
 
 		#[pallet::call_index(4)]
 		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
-		pub fn close_proposal(origin: OriginFor<T>, proposal_id: ProposalId) -> DispatchResult {
+		pub fn close_proposal(
+			origin: OriginFor<T>,
+			proposal_id: ProposalId,
+		) -> DispatchResultWithPostInfo {
 			ensure_signed(origin)?;
 
 			let current_block = Pallet::<T>::get_current_block_number();
@@ -263,7 +312,7 @@ pub mod pallet {
 
 			Proposals::<T>::remove(proposal_id);
 			Self::deposit_event(Event::<T>::ProposalClosed { proposal_id, ratio: proposal.ratio });
-			Ok(())
+			Ok(Pays::No.into())
 		}
 
 		#[pallet::call_index(5)]
@@ -292,6 +341,85 @@ pub mod pallet {
 			Self::deposit_event(Event::<T>::AccountListSet { proposal_id, account_list });
 			Ok(())
 		}
+
+		#[pallet::call_index(6)]
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		pub fn vote(
+			origin: OriginFor<T>,
+			proposal_id: ProposalId,
+			aye: bool,
+			power: u128,
+		) -> DispatchResult {
+			let caller = ensure_signed(origin)?;
+			ensure!(
+				RegisteredVoters::<T>::get(caller.clone()).is_some(),
+				Error::<T>::VoterNotRegistered
+			);
+
+			let current_block = Pallet::<T>::get_current_block_number();
+
+			Proposals::<T>::try_mutate(proposal_id, |maybe_proposal| -> DispatchResult {
+				let proposal = maybe_proposal.as_mut().ok_or(Error::<T>::ProposalDoesNotExist)?;
+
+				ensure!(proposal.has_started(&current_block), Error::<T>::ProposalHasNotStartedYet);
+				ensure!(!proposal.has_ended(&current_block), Error::<T>::ProposalHasNotEndedYet);
+
+				let maybe_account_list = proposal.clone().account_list;
+				if let Some(account_list) = maybe_account_list {
+					let allowed_voter = match proposal.kind {
+						ProposalKind::Public => !account_list.contains(&caller),
+						ProposalKind::Private => account_list.contains(&caller),
+					};
+					ensure!(allowed_voter, Error::<T>::OriginNoPermission)
+				}
+
+				if power.is_zero() {
+					T::NativeBalance::thaw(&T::FreezeIdForPallet::get(), &caller)?;
+				} else {
+					let new_amount = Pallet::<T>::calculate_quadratic_amount(power);
+					ensure!(
+						T::NativeBalance::balance_freezable(&caller).ge(&new_amount),
+						Error::<T>::InsufficientBalance
+					);
+					T::NativeBalance::set_freeze(
+						&T::FreezeIdForPallet::get(),
+						&caller,
+						new_amount,
+					)?;
+				}
+
+				let maybe_vote = Votes::<T>::get(caller.clone(), proposal_id);
+				if let Some(vote) = maybe_vote {
+					// TODO: ensure power not the same
+					let prev_power = vote.power;
+					if prev_power.lt(&power) {
+						let power_diff = power.saturating_sub(prev_power);
+						proposal.add_ratio(aye, power_diff);
+					} else {
+						let power_diff = prev_power.saturating_sub(power);
+						proposal.remove_ratio(aye, power_diff);
+					}
+				} else {
+					proposal.add_ratio(aye, power);
+				}
+
+				if power.is_zero() {
+					Votes::<T>::remove(caller.clone(), proposal_id);
+					Self::deposit_event(Event::VoteDropped { proposal_id, voter: caller });
+				} else {
+					Votes::<T>::insert(caller.clone(), proposal_id, VoteInfo { aye, power });
+					Self::deposit_event(Event::VoteAdded {
+						proposal_id,
+						voter: caller,
+						aye,
+						power,
+					});
+				}
+				Ok(().into())
+			})?;
+
+			Ok(())
+		}
 	}
 }
 
@@ -305,6 +433,10 @@ impl<T: Config> Pallet<T> {
 
 	fn get_current_block_number() -> BlockNumberFor<T> {
 		frame_system::Pallet::<T>::block_number()
+	}
+
+	fn calculate_quadratic_amount(power: u128) -> BalanceOf<T> {
+		power.checked_mul(power).unwrap_or(u128::MAX).saturated_into()
 	}
 }
 

@@ -87,6 +87,7 @@ impl pallet_voting::Config for Test {
 	type ProposalMaximumDuration = ProposalMaximumDuration;
 	type ProposalMinimumDuration = ProposalMinimumDuration;
 	type ProposalDelayLimit = ProposalDelayLimit;
+	type FreezeIdForPallet = ();
 }
 
 // Build genesis storage according to the mock runtime.

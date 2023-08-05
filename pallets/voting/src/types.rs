@@ -10,7 +10,9 @@ use scale_info::TypeInfo;
 
 // pub type BlockNumber = u32;
 pub type ProposalId = u32;
-pub type VoteRatio = (u32, u32);
+/// The current vote ratio for a open proposal.
+/// The first element represent 'aye' votes and the second the total number of votes.
+pub type VoteRatio = (u128, u128);
 
 #[derive(
 	PartialEq, Eq, Copy, Clone, RuntimeDebug, Encode, Decode, Default, TypeInfo, MaxEncodedLen,
@@ -63,6 +65,7 @@ where
 	AccountSizeLimit: Get<u32>,
 	ProposalOffchainDataLimit: Get<u32>,
 {
+	// TODO: document all helpers
 	pub fn new(
 		offchain_data: BoundedVec<u8, ProposalOffchainDataLimit>,
 		kind: ProposalKind,
@@ -70,7 +73,7 @@ where
 		account_list: Option<BoundedVec<AccountId, AccountSizeLimit>>,
 		start_block: BlockNumberFor<T>,
 		end_block: BlockNumberFor<T>,
-	) -> ProposalData<T, AccountId, AccountSizeLimit, ProposalOffchainDataLimit> {
+	) -> Self {
 		Self {
 			offchain_data,
 			ratio: VoteRatio::default(),
@@ -93,4 +96,34 @@ where
 	pub fn has_ended(&self, block: &BlockNumberFor<T>) -> bool {
 		self.end_block.le(block)
 	}
+
+	pub fn add_ratio(&mut self, aye: bool, power: u128) -> Self {
+		let new_ratio = if aye {
+			(self.ratio.0.saturating_add(power), self.ratio.1.saturating_add(power))
+		} else {
+			(self.ratio.0, self.ratio.1.saturating_add(power))
+		};
+		Self { ratio: new_ratio, ..self.clone() }
+	}
+
+	pub fn remove_ratio(&mut self, aye: bool, power: u128) -> Self {
+		let new_ratio = if aye {
+			(self.ratio.0.saturating_sub(power), self.ratio.1.saturating_sub(power))
+		} else {
+			(self.ratio.0, self.ratio.1.saturating_sub(power))
+		};
+		Self { ratio: new_ratio, ..self.clone() }
+	}
+}
+
+#[derive(
+	Encode, Decode, Eq, CloneNoBound, PartialEqNoBound, RuntimeDebugNoBound, TypeInfo, MaxEncodedLen,
+)]
+pub struct VoteInfo {
+	/// The vote:
+	/// - 'aye' -> true,
+	/// - 'nay' -> false,
+	pub aye: bool,
+	/// The power for this vote
+	pub power: u128,
 }
