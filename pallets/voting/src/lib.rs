@@ -2,6 +2,7 @@
 
 use frame_support::sp_runtime::traits::Zero;
 use frame_support::sp_runtime::{SaturatedConversion, Saturating};
+use frame_support::traits::tokens::{Fortitude, Preservation};
 use frame_support::{dispatch::Vec, pallet_prelude::*, traits::fungible};
 use frame_system::pallet_prelude::BlockNumberFor;
 
@@ -21,7 +22,6 @@ mod benchmarking;
 #[frame_support::pallet]
 pub mod pallet {
 	use super::*;
-	use frame_support::traits::fungible::{InspectFreeze, MutateFreeze};
 	use frame_system::pallet_prelude::*;
 
 	#[pallet::pallet]
@@ -181,8 +181,12 @@ pub mod pallet {
 		ProposalDurationIsTooShort,
 		/// The delay for a proposal to start is too far away
 		ProposalStartIsTooFarAway,
+		/// A claim is possible only for closed proposal
+		ProposalNotClosed,
 		/// The voter has insufficient free funds to vote with power
 		InsufficientBalance,
+		/// The new vote is already the active vote
+		IdenticVote,
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -202,14 +206,28 @@ pub mod pallet {
 		#[pallet::call_index(1)]
 		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
 		pub fn unregister_voter(origin: OriginFor<T>, who: T::AccountId) -> DispatchResult {
-			let caller =
-				ensure_signed_or_root(origin).map_err(|_| Error::<T>::OriginNoPermission)?;
-			ensure!((caller.is_none() || caller.unwrap() == who), Error::<T>::OriginNoPermission);
+			let maybe_caller = ensure_signed_or_root(origin)?;
+			ensure!(
+				(maybe_caller.is_none() || maybe_caller.clone().unwrap() == who),
+				Error::<T>::OriginNoPermission
+			);
+
+			let caller = maybe_caller.unwrap();
+
+			for vote in Votes::<T>::iter_prefix_values(caller.clone()) {
+				Pallet::<T>::unfreeze(&caller.clone(), vote.power);
+
+				Proposals::<T>::try_mutate(vote.proposal_id, |maybe_proposal| -> DispatchResult {
+					if let Some(proposal) = maybe_proposal {
+						proposal.remove_ratio(vote.aye, vote.power);
+					}
+					Ok(().into())
+				})?;
+			}
+
+			let _ = Votes::<T>::clear_prefix(caller, u32::MAX, None);
 			RegisteredVoters::<T>::remove(&who);
 			Self::deposit_event(Event::<T>::VoterUnregistered { who });
-
-			// TODO: clean up votes & adjust ratio
-
 			Ok(())
 		}
 
@@ -373,33 +391,21 @@ pub mod pallet {
 					ensure!(allowed_voter, Error::<T>::OriginNoPermission)
 				}
 
-				if power.is_zero() {
-					T::NativeBalance::thaw(&T::FreezeIdForPallet::get(), &caller)?;
-				} else {
-					let new_amount = Pallet::<T>::calculate_quadratic_amount(power);
-					ensure!(
-						T::NativeBalance::balance_freezable(&caller).ge(&new_amount),
-						Error::<T>::InsufficientBalance
-					);
-					T::NativeBalance::set_freeze(
-						&T::FreezeIdForPallet::get(),
-						&caller,
-						new_amount,
-					)?;
-				}
-
 				let maybe_vote = Votes::<T>::get(caller.clone(), proposal_id);
 				if let Some(vote) = maybe_vote {
-					// TODO: ensure power not the same
+					ensure!(vote.power != power && vote.aye != aye, Error::<T>::IdenticVote); // TODO: Is useful?
 					let prev_power = vote.power;
 					if prev_power.lt(&power) {
 						let power_diff = power.saturating_sub(prev_power);
+						Pallet::<T>::freeze(&caller, power_diff)?;
 						proposal.add_ratio(aye, power_diff);
 					} else {
 						let power_diff = prev_power.saturating_sub(power);
+						Pallet::<T>::unfreeze(&caller, power_diff);
 						proposal.remove_ratio(aye, power_diff);
 					}
 				} else {
+					Pallet::<T>::freeze(&caller, power)?;
 					proposal.add_ratio(aye, power);
 				}
 
@@ -407,7 +413,11 @@ pub mod pallet {
 					Votes::<T>::remove(caller.clone(), proposal_id);
 					Self::deposit_event(Event::VoteDropped { proposal_id, voter: caller });
 				} else {
-					Votes::<T>::insert(caller.clone(), proposal_id, VoteInfo { aye, power });
+					Votes::<T>::insert(
+						caller.clone(),
+						proposal_id,
+						VoteInfo { proposal_id, aye, power },
+					);
 					Self::deposit_event(Event::VoteAdded {
 						proposal_id,
 						voter: caller,
@@ -417,6 +427,26 @@ pub mod pallet {
 				}
 				Ok(().into())
 			})?;
+
+			Ok(())
+		}
+
+		#[pallet::call_index(7)]
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
+		pub fn claim(origin: OriginFor<T>, proposal_id: ProposalId) -> DispatchResult {
+			let caller = ensure_signed(origin)?;
+			ensure!(
+				RegisteredVoters::<T>::get(caller.clone()).is_some(),
+				Error::<T>::VoterNotRegistered
+			);
+			ensure!(Proposals::<T>::get(proposal_id).is_none(), Error::<T>::ProposalNotClosed);
+
+			let maybe_vote = Votes::<T>::get(caller.clone(), proposal_id);
+			if let Some(vote) = maybe_vote {
+				Pallet::<T>::unfreeze(&caller, vote.power);
+			}
+
+			Votes::<T>::remove(caller.clone(), proposal_id);
 
 			Ok(())
 		}
@@ -437,6 +467,28 @@ impl<T: Config> Pallet<T> {
 
 	fn calculate_quadratic_amount(power: u128) -> BalanceOf<T> {
 		power.checked_mul(power).unwrap_or(u128::MAX).saturated_into()
+	}
+
+	fn freeze(who: &T::AccountId, power_diff: u128) -> DispatchResult {
+		use frame_support::traits::fungible::{Inspect, InspectFreeze, MutateFreeze};
+
+		let to_freeze_amount = Pallet::<T>::calculate_quadratic_amount(power_diff);
+		let balance =
+			T::NativeBalance::reducible_balance(who, Preservation::Preserve, Fortitude::Polite);
+		ensure!(balance.ge(&to_freeze_amount), Error::<T>::InsufficientBalance);
+
+		let freeze_balance = T::NativeBalance::balance_freezable(who);
+		let new_freeze_balance = freeze_balance.saturating_add(to_freeze_amount);
+		T::NativeBalance::set_freeze(&T::FreezeIdForPallet::get(), who, new_freeze_balance)
+	}
+
+	fn unfreeze(who: &T::AccountId, power_diff: u128) -> () {
+		use frame_support::traits::fungible::{InspectFreeze, MutateFreeze};
+
+		let to_unfreeze_amount = Pallet::<T>::calculate_quadratic_amount(power_diff);
+		let freeze_balance = T::NativeBalance::balance_freezable(who);
+		let new_freeze_balance = freeze_balance.saturating_sub(to_unfreeze_amount);
+		let _ = T::NativeBalance::set_freeze(&T::FreezeIdForPallet::get(), who, new_freeze_balance);
 	}
 }
 

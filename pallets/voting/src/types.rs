@@ -120,6 +120,8 @@ where
 	Encode, Decode, Eq, CloneNoBound, PartialEqNoBound, RuntimeDebugNoBound, TypeInfo, MaxEncodedLen,
 )]
 pub struct VoteInfo {
+	/// The proposal ID
+	pub proposal_id: ProposalId,
 	/// The vote:
 	/// - 'aye' -> true,
 	/// - 'nay' -> false,
