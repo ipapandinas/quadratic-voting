@@ -6,9 +6,7 @@ use frame_support::BoundedVec;
 use frame_system::pallet_prelude::BlockNumberFor;
 use scale_info::prelude::fmt::Debug;
 use scale_info::TypeInfo;
-// use sp_std::fmt::Debug;
 
-// pub type BlockNumber = u32;
 pub type ProposalId = u32;
 /// The current vote ratio for a open proposal.
 /// The first element represent 'aye' votes and the second the total number of votes.
@@ -97,22 +95,43 @@ where
 		self.end_block.le(block)
 	}
 
-	pub fn add_ratio(&mut self, aye: bool, power: u128) -> Self {
+	// pub fn has_majority(&self) -> bool {
+	// 	if self.kind == ProposalKind::Private {
+	// 		let maybe_account_list = &self.account_list;
+	// 		if let Some(account_list) = maybe_account_list {
+	// 			let account_list_len = account_list.len();
+	// 			let (aye, total) = self.ratio;
+	// 			return account_list_len > 1 && aye > total / 2;
+	// 		}
+	// 	}
+
+	// 	false
+	// }
+
+	pub fn add_ratio(&mut self, aye: bool, prev_power: u128, new_power: u128) {
+		let prev_quadratic_amount = prev_power.checked_mul(prev_power).unwrap_or(u128::MAX);
+		let new_quadratic_amount = new_power.checked_mul(new_power).unwrap_or(u128::MAX);
+		let amount_diff = new_quadratic_amount.saturating_sub(prev_quadratic_amount);
+
 		let new_ratio = if aye {
-			(self.ratio.0.saturating_add(power), self.ratio.1.saturating_add(power))
+			(self.ratio.0.saturating_add(amount_diff), self.ratio.1.saturating_add(amount_diff))
 		} else {
-			(self.ratio.0, self.ratio.1.saturating_add(power))
+			(self.ratio.0, self.ratio.1.saturating_add(amount_diff))
 		};
-		Self { ratio: new_ratio, ..self.clone() }
+		*self = Self { ratio: new_ratio, ..self.clone() }
 	}
 
-	pub fn remove_ratio(&mut self, aye: bool, power: u128) -> Self {
+	pub fn remove_ratio(&mut self, aye: bool, prev_power: u128, new_power: u128) {
+		let prev_quadratic_amount = prev_power.checked_mul(prev_power).unwrap_or(u128::MAX);
+		let new_quadratic_amount = new_power.checked_mul(new_power).unwrap_or(u128::MAX);
+		let amount_diff = prev_quadratic_amount.saturating_sub(new_quadratic_amount);
+
 		let new_ratio = if aye {
-			(self.ratio.0.saturating_sub(power), self.ratio.1.saturating_sub(power))
+			(self.ratio.0.saturating_sub(amount_diff), self.ratio.1.saturating_sub(amount_diff))
 		} else {
-			(self.ratio.0, self.ratio.1.saturating_sub(power))
+			(self.ratio.0, self.ratio.1.saturating_sub(amount_diff))
 		};
-		Self { ratio: new_ratio, ..self.clone() }
+		*self = Self { ratio: new_ratio, ..self.clone() }
 	}
 }
 

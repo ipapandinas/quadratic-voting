@@ -94,3 +94,38 @@ impl pallet_voting::Config for Test {
 pub fn new_test_ext() -> sp_io::TestExternalities {
 	frame_system::GenesisConfig::<Test>::default().build_storage().unwrap().into()
 }
+
+pub struct ExtBuilder {
+	balances: Vec<(u64, Balance)>,
+}
+
+impl Default for ExtBuilder {
+	fn default() -> Self {
+		Self { balances: Vec::new() }
+	}
+}
+
+impl ExtBuilder {
+	pub fn new(balances: Vec<(u64, Balance)>) -> Self {
+		Self { balances }
+	}
+
+	pub fn new_build(balances: Vec<(u64, Balance)>) -> sp_io::TestExternalities {
+		Self::new(balances).build()
+	}
+
+	pub fn build(self) -> sp_io::TestExternalities {
+		let mut t = <frame_system::GenesisConfig<Test> as BuildStorage>::build_storage(
+			&frame_system::GenesisConfig::default(),
+		)
+		.unwrap();
+
+		pallet_balances::GenesisConfig::<Test> { balances: self.balances }
+			.assimilate_storage(&mut t)
+			.unwrap();
+
+		let mut ext = sp_io::TestExternalities::new(t);
+		ext.execute_with(|| System::set_block_number(1));
+		ext
+	}
+}

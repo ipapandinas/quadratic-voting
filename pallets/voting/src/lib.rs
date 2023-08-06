@@ -98,7 +98,7 @@ pub mod pallet {
 	/// All votes for proposals in progress.
 	/// The key is the proposal ID and the voter ID, to ensure it's unique.
 	#[pallet::storage]
-	#[pallet::getter(fn get_votes)]
+	#[pallet::getter(fn votes)]
 	pub type Votes<T: Config> = StorageDoubleMap<
 		_,
 		Blake2_256,
@@ -120,7 +120,7 @@ pub mod pallet {
 		VoterUnregistered {
 			who: T::AccountId,
 		},
-		NewProposal {
+		ProposalCreated {
 			proposal_id: ProposalId,
 			offchain_data: BoundedVec<u8, T::ProposalOffchainDataLimit>,
 			creator: T::AccountId,
@@ -132,7 +132,7 @@ pub mod pallet {
 		ProposalCancelled {
 			proposal_id: ProposalId,
 		},
-		ProposalClosed {
+		VoteCompleted {
 			proposal_id: ProposalId,
 			ratio: (u128, u128),
 		},
@@ -215,11 +215,11 @@ pub mod pallet {
 			let caller = maybe_caller.unwrap();
 
 			for vote in Votes::<T>::iter_prefix_values(caller.clone()) {
-				Pallet::<T>::unfreeze(&caller.clone(), vote.power);
+				Pallet::<T>::unfreeze(&caller.clone(), vote.power, 0)?;
 
 				Proposals::<T>::try_mutate(vote.proposal_id, |maybe_proposal| -> DispatchResult {
 					if let Some(proposal) = maybe_proposal {
-						proposal.remove_ratio(vote.aye, vote.power);
+						proposal.remove_ratio(vote.aye, vote.power, 0);
 					}
 					Ok(().into())
 				})?;
@@ -280,7 +280,7 @@ pub mod pallet {
 
 			Proposals::<T>::insert(proposal_id, proposal);
 
-			let event = Event::NewProposal {
+			let event = Event::ProposalCreated {
 				proposal_id,
 				offchain_data,
 				creator: caller,
@@ -329,7 +329,7 @@ pub mod pallet {
 			ensure!(proposal.has_ended(&current_block), Error::<T>::ProposalHasNotEndedYet);
 
 			Proposals::<T>::remove(proposal_id);
-			Self::deposit_event(Event::<T>::ProposalClosed { proposal_id, ratio: proposal.ratio });
+			Self::deposit_event(Event::<T>::VoteCompleted { proposal_id, ratio: proposal.ratio });
 			Ok(Pays::No.into())
 		}
 
@@ -380,7 +380,7 @@ pub mod pallet {
 				let proposal = maybe_proposal.as_mut().ok_or(Error::<T>::ProposalDoesNotExist)?;
 
 				ensure!(proposal.has_started(&current_block), Error::<T>::ProposalHasNotStartedYet);
-				ensure!(!proposal.has_ended(&current_block), Error::<T>::ProposalHasNotEndedYet);
+				ensure!(!proposal.has_ended(&current_block), Error::<T>::ProposalHasAlreadyEnded);
 
 				let maybe_account_list = proposal.clone().account_list;
 				if let Some(account_list) = maybe_account_list {
@@ -393,20 +393,18 @@ pub mod pallet {
 
 				let maybe_vote = Votes::<T>::get(caller.clone(), proposal_id);
 				if let Some(vote) = maybe_vote {
-					ensure!(vote.power != power && vote.aye != aye, Error::<T>::IdenticVote); // TODO: Is useful?
+					ensure!(!(vote.power == power && vote.aye == aye), Error::<T>::IdenticVote); // TODO: Is useful?
 					let prev_power = vote.power;
 					if prev_power.lt(&power) {
-						let power_diff = power.saturating_sub(prev_power);
-						Pallet::<T>::freeze(&caller, power_diff)?;
-						proposal.add_ratio(aye, power_diff);
+						Pallet::<T>::freeze(&caller, prev_power, power)?;
+						proposal.add_ratio(aye, prev_power, power);
 					} else {
-						let power_diff = prev_power.saturating_sub(power);
-						Pallet::<T>::unfreeze(&caller, power_diff);
-						proposal.remove_ratio(aye, power_diff);
+						Pallet::<T>::unfreeze(&caller, prev_power, power)?;
+						proposal.remove_ratio(aye, prev_power, power);
 					}
 				} else {
-					Pallet::<T>::freeze(&caller, power)?;
-					proposal.add_ratio(aye, power);
+					Pallet::<T>::freeze(&caller, 0, power)?;
+					proposal.add_ratio(aye, 0, power);
 				}
 
 				if power.is_zero() {
@@ -425,6 +423,16 @@ pub mod pallet {
 						power,
 					});
 				}
+
+				// let new_proposal: ProposalData = proposal;
+
+				// TODO: check if majority is doable in quadratic quorum voting; I don't think so
+				// if proposal.has_majority() {
+				// 	let ratio = proposal.ratio;
+				// 	*maybe_proposal = None;
+				// 	Self::deposit_event(Event::<T>::VoteCompleted { proposal_id, ratio });
+				// }
+
 				Ok(().into())
 			})?;
 
@@ -443,7 +451,7 @@ pub mod pallet {
 
 			let maybe_vote = Votes::<T>::get(caller.clone(), proposal_id);
 			if let Some(vote) = maybe_vote {
-				Pallet::<T>::unfreeze(&caller, vote.power);
+				Pallet::<T>::unfreeze(&caller, vote.power, 0)?;
 			}
 
 			Votes::<T>::remove(caller.clone(), proposal_id);
@@ -469,26 +477,34 @@ impl<T: Config> Pallet<T> {
 		power.checked_mul(power).unwrap_or(u128::MAX).saturated_into()
 	}
 
-	fn freeze(who: &T::AccountId, power_diff: u128) -> DispatchResult {
+	fn freeze(who: &T::AccountId, prev_power: u128, power: u128) -> DispatchResult {
 		use frame_support::traits::fungible::{Inspect, InspectFreeze, MutateFreeze};
 
-		let to_freeze_amount = Pallet::<T>::calculate_quadratic_amount(power_diff);
-		let balance =
-			T::NativeBalance::reducible_balance(who, Preservation::Preserve, Fortitude::Polite);
-		ensure!(balance.ge(&to_freeze_amount), Error::<T>::InsufficientBalance);
+		let current_frozen_balance =
+			T::NativeBalance::balance_frozen(&T::FreezeIdForPallet::get(), who);
+		let prev_amount = Pallet::<T>::calculate_quadratic_amount(prev_power);
+		let new_amount = Pallet::<T>::calculate_quadratic_amount(power);
+		let additional_amount = new_amount.saturating_sub(prev_amount);
 
-		let freeze_balance = T::NativeBalance::balance_freezable(who);
-		let new_freeze_balance = freeze_balance.saturating_add(to_freeze_amount);
-		T::NativeBalance::set_freeze(&T::FreezeIdForPallet::get(), who, new_freeze_balance)
+		let available_balance =
+			T::NativeBalance::reducible_balance(who, Preservation::Preserve, Fortitude::Polite);
+		ensure!(available_balance.ge(&additional_amount), Error::<T>::InsufficientBalance);
+
+		let new_freeze_amount = current_frozen_balance.saturating_add(additional_amount);
+		T::NativeBalance::set_freeze(&T::FreezeIdForPallet::get(), who, new_freeze_amount)
 	}
 
-	fn unfreeze(who: &T::AccountId, power_diff: u128) -> () {
+	fn unfreeze(who: &T::AccountId, prev_power: u128, power: u128) -> DispatchResult {
 		use frame_support::traits::fungible::{InspectFreeze, MutateFreeze};
 
-		let to_unfreeze_amount = Pallet::<T>::calculate_quadratic_amount(power_diff);
-		let freeze_balance = T::NativeBalance::balance_freezable(who);
-		let new_freeze_balance = freeze_balance.saturating_sub(to_unfreeze_amount);
-		let _ = T::NativeBalance::set_freeze(&T::FreezeIdForPallet::get(), who, new_freeze_balance);
+		let current_frozen_balance =
+			T::NativeBalance::balance_frozen(&T::FreezeIdForPallet::get(), who);
+		let prev_amount = Pallet::<T>::calculate_quadratic_amount(prev_power);
+		let new_amount = Pallet::<T>::calculate_quadratic_amount(power);
+		let extra_amount = prev_amount.saturating_sub(new_amount);
+
+		let new_freeze_amount = current_frozen_balance.saturating_sub(extra_amount);
+		T::NativeBalance::set_freeze(&T::FreezeIdForPallet::get(), who, new_freeze_amount)
 	}
 }
 

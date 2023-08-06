@@ -109,7 +109,7 @@ mod create_proposal {
 
 			// Event
 			System::assert_last_event(
-				Event::NewProposal {
+				Event::ProposalCreated {
 					proposal_id,
 					offchain_data: proposal_data.offchain_data,
 					creator: ALICE,
@@ -308,7 +308,7 @@ mod close_proposal {
 
 			// Event
 			System::assert_last_event(
-				Event::ProposalClosed { proposal_id, ratio: VoteRatio::default() }.into(),
+				Event::VoteCompleted { proposal_id, ratio: VoteRatio::default() }.into(),
 			);
 		})
 	}
@@ -466,6 +466,407 @@ mod set_account_list {
 	}
 }
 
+mod vote {
+	use frame_support::traits::fungible::freeze::Inspect;
+	use sp_core::Get;
+
+	use crate::VoteInfo;
+
+	use super::*;
+
+	fn vote_setup() {
+		let start_block = 1;
+		let end_block = 200;
+		assert_ok!(Voting::register_voter(RuntimeOrigin::root(), ALICE));
+		assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+	}
+
+	#[test]
+	fn works_only_if_registered_voter() {
+		new_test_ext().execute_with(|| {
+			assert_noop!(
+				Voting::vote(RuntimeOrigin::signed(2), 0, true, 1),
+				Error::<Test>::VoterNotRegistered
+			);
+		})
+	}
+
+	#[test]
+	fn cannot_vote_proposal_not_existing() {
+		new_test_ext().execute_with(|| {
+			setup();
+			assert_noop!(
+				Voting::vote(RuntimeOrigin::signed(ALICE), 1, true, 1),
+				Error::<Test>::ProposalDoesNotExist
+			);
+		})
+	}
+
+	#[test]
+	fn cannot_vote_proposal_not_started() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 10;
+			let end_block = 200;
+			setup();
+
+			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			assert_noop!(
+				Voting::vote(RuntimeOrigin::signed(ALICE), proposal_id, true, 1),
+				Error::<Test>::ProposalHasNotStartedYet
+			);
+		})
+	}
+
+	#[test]
+	fn cannot_vote_proposal_finished() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 10;
+			let end_block = 200;
+			setup();
+
+			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+
+			System::set_block_number(201);
+
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			assert_noop!(
+				Voting::vote(RuntimeOrigin::signed(ALICE), proposal_id, true, 1),
+				Error::<Test>::ProposalHasAlreadyEnded
+			);
+		})
+	}
+
+	#[test]
+	fn banned_voter_cannot_vote() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 1;
+			let end_block = 200;
+			let account_list = BoundedVec::try_from(vec![BOB]).unwrap();
+			assert_ok!(Voting::register_voter(RuntimeOrigin::root(), BOB));
+			setup();
+
+			assert_ok!(ProposalBuilder::new()
+				.start(start_block)
+				.end(end_block)
+				.set_account_list(Some(account_list))
+				.execute());
+
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			assert_noop!(
+				Voting::vote(RuntimeOrigin::signed(BOB), proposal_id, true, 1),
+				Error::<Test>::OriginNoPermission
+			);
+		})
+	}
+
+	#[test]
+	fn not_allowed_voter_cannot_vote_private_proposal() {
+		new_test_ext().execute_with(|| {
+			System::set_block_number(1);
+			let start_block = 1;
+			let end_block = 200;
+			let account_list = BoundedVec::try_from(vec![ALICE]).unwrap();
+			assert_ok!(Voting::register_voter(RuntimeOrigin::root(), BOB));
+			setup();
+
+			assert_ok!(ProposalBuilder::new()
+				.start(start_block)
+				.end(end_block)
+				.set_account_list(Some(account_list))
+				.private()
+				.execute());
+
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			assert_noop!(
+				Voting::vote(RuntimeOrigin::signed(BOB), proposal_id, true, 1),
+				Error::<Test>::OriginNoPermission
+			);
+		})
+	}
+
+	#[test]
+	fn ext_builder_balance_setup_works() {
+		ExtBuilder::new_build(vec![(ALICE, 10), (BOB, 100)]).execute_with(|| {
+			let alice_balance = Balances::free_balance(ALICE);
+			assert!(alice_balance == 10);
+
+			let bob_balance = Balances::free_balance(BOB);
+			assert!(bob_balance == 100);
+
+			let freeze_id: () =
+				<<Test as pallet_voting::Config>::FreezeIdForPallet as Get<_>>::get();
+			let alice_balance_frozen_balance =
+				<<Test as crate::Config>::NativeBalance as Inspect<
+					<Test as frame_system::Config>::AccountId,
+				>>::balance_frozen(&freeze_id, &ALICE);
+			assert_eq!(alice_balance_frozen_balance, 0);
+
+			let bob_balance_frozen_balance = <<Test as crate::Config>::NativeBalance as Inspect<
+				<Test as frame_system::Config>::AccountId,
+			>>::balance_frozen(&freeze_id, &BOB);
+			assert_eq!(bob_balance_frozen_balance, 0);
+		})
+	}
+
+	#[test]
+	fn cannot_vote_with_insufficient_funds() {
+		ExtBuilder::new_build(vec![(ALICE, 10)]).execute_with(|| {
+			let start_block = 1;
+			let end_block = 200;
+			let aye = true;
+			let power = 4; // 16 tokens required
+			setup();
+
+			assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+
+			let proposal_id = Voting::get_next_proposal_id() - 1;
+			assert_noop!(
+				Voting::vote(RuntimeOrigin::signed(ALICE), proposal_id, aye, power),
+				Error::<Test>::InsufficientBalance
+			);
+		})
+	}
+
+	#[test]
+	fn single_vote() {
+		ExtBuilder::new_build(vec![(ALICE, 10)]).execute_with(|| {
+			let freeze_id: () =
+				<<Test as pallet_voting::Config>::FreezeIdForPallet as Get<_>>::get();
+
+			let aye = true;
+			let power = 3; // 9 tokens required
+			let quadratic_amount = Voting::calculate_quadratic_amount(power);
+			vote_setup();
+
+			let proposal_id = Voting::next_proposal_id() - 1;
+
+			// Execution
+			assert_ok!(Voting::vote(RuntimeOrigin::signed(ALICE), proposal_id, aye, power));
+
+			// Storage
+			let proposal = Voting::proposals(proposal_id);
+			assert_eq!(proposal.unwrap().ratio, (quadratic_amount, quadratic_amount));
+
+			let alice_frozen_balance = <<Test as crate::Config>::NativeBalance as Inspect<
+				<Test as frame_system::Config>::AccountId,
+			>>::balance_frozen(&freeze_id, &ALICE);
+			assert_eq!(alice_frozen_balance, quadratic_amount);
+
+			let vote = Voting::votes(ALICE, proposal_id);
+			assert_eq!(vote, Some(VoteInfo { proposal_id, aye, power }));
+
+			// Event
+			System::assert_last_event(
+				Event::VoteAdded { proposal_id, voter: ALICE, aye, power }.into(),
+			);
+		})
+	}
+
+	#[test]
+	fn vote_adjustment() {
+		ExtBuilder::new_build(vec![(ALICE, 100)]).execute_with(|| {
+			let freeze_id: () =
+				<<Test as pallet_voting::Config>::FreezeIdForPallet as Get<_>>::get();
+
+			let init_aye = true;
+			let init_power = 3; // 9 tokens required
+			vote_setup();
+
+			let proposal_id = Voting::next_proposal_id() - 1;
+
+			// Initial vote execution
+			assert_ok!(Voting::vote(
+				RuntimeOrigin::signed(ALICE),
+				proposal_id,
+				init_aye,
+				init_power
+			));
+
+			System::set_block_number(2);
+
+			// Vote adjustment
+			let second_aye = true;
+			let second_power = 4; // 16 tokens required - diff = 7
+			let second_quadratic_amount = Voting::calculate_quadratic_amount(second_power);
+
+			assert_ok!(Voting::vote(
+				RuntimeOrigin::signed(ALICE),
+				proposal_id,
+				second_aye,
+				second_power
+			));
+
+			// Storage
+			let proposal = Voting::proposals(proposal_id);
+			assert_eq!(proposal.unwrap().ratio, (second_quadratic_amount, second_quadratic_amount));
+
+			let alice_frozen_balance = <<Test as crate::Config>::NativeBalance as Inspect<
+				<Test as frame_system::Config>::AccountId,
+			>>::balance_frozen(&freeze_id, &ALICE);
+			assert_eq!(alice_frozen_balance, second_quadratic_amount);
+
+			let vote = Voting::votes(ALICE, proposal_id);
+			assert_eq!(vote, Some(VoteInfo { proposal_id, aye: second_aye, power: second_power }));
+
+			// Event
+			System::assert_last_event(
+				Event::VoteAdded {
+					proposal_id,
+					voter: ALICE,
+					aye: second_aye,
+					power: second_power,
+				}
+				.into(),
+			);
+		})
+	}
+
+	#[test]
+	fn retract_vote() {
+		ExtBuilder::new_build(vec![(ALICE, 10)]).execute_with(|| {
+			let freeze_id: () =
+				<<Test as pallet_voting::Config>::FreezeIdForPallet as Get<_>>::get();
+
+			let init_aye = true;
+			let init_power = 3; // 9 tokens required
+			vote_setup();
+
+			let proposal_id = Voting::next_proposal_id() - 1;
+
+			// Initial vote execution
+			assert_ok!(Voting::vote(
+				RuntimeOrigin::signed(ALICE),
+				proposal_id,
+				init_aye,
+				init_power
+			));
+
+			System::set_block_number(2);
+
+			// Vote adjustment
+			let second_aye = true;
+			let second_power = 0; // 16 tokens required - diff = 7
+			let second_quadratic_amount = Voting::calculate_quadratic_amount(second_power);
+
+			assert_ok!(Voting::vote(
+				RuntimeOrigin::signed(ALICE),
+				proposal_id,
+				second_aye,
+				second_power
+			));
+
+			// Storage
+			let proposal = Voting::proposals(proposal_id);
+			assert_eq!(proposal.unwrap().ratio, (second_quadratic_amount, second_quadratic_amount));
+
+			let alice_frozen_balance = <<Test as crate::Config>::NativeBalance as Inspect<
+				<Test as frame_system::Config>::AccountId,
+			>>::balance_frozen(&freeze_id, &ALICE);
+			assert_eq!(alice_frozen_balance, second_quadratic_amount);
+
+			let vote = Voting::votes(ALICE, proposal_id);
+			assert_eq!(vote, None);
+
+			// Event
+			System::assert_last_event(Event::VoteDropped { proposal_id, voter: ALICE }.into());
+		})
+	}
+
+	#[test]
+	fn multiple_proposal_votes() {
+		ExtBuilder::new_build(vec![(ALICE, 30)]).execute_with(|| {
+			let freeze_id: () =
+				<<Test as pallet_voting::Config>::FreezeIdForPallet as Get<_>>::get();
+
+			let proposal_1_start_block = 1;
+			let proposal_1_end_block = 200;
+			let proposal_2_start_block = 10;
+			let proposal_2_end_block = 210;
+			assert_ok!(Voting::register_voter(RuntimeOrigin::root(), ALICE));
+			assert_ok!(ProposalBuilder::new()
+				.start(proposal_1_start_block)
+				.end(proposal_1_end_block)
+				.execute());
+			let proposal_1_id = Voting::next_proposal_id() - 1;
+			assert_ok!(ProposalBuilder::new()
+				.start(proposal_2_start_block)
+				.end(proposal_2_end_block)
+				.execute());
+			let proposal_2_id = Voting::next_proposal_id() - 1;
+
+			let proposal_1_vote_aye = true;
+			let proposal_1_vote_power = 3; // 9 tokens required
+			let proposal_1_quadratic_amount =
+				Voting::calculate_quadratic_amount(proposal_1_vote_power);
+			let proposal_2_vote_aye = false;
+			let proposal_2_vote_power = 4; // 16 tokens required
+			let proposal_2_quadratic_amount =
+				Voting::calculate_quadratic_amount(proposal_2_vote_power);
+
+			// Vote proposal 1
+			assert_ok!(Voting::vote(
+				RuntimeOrigin::signed(ALICE),
+				proposal_1_id,
+				proposal_1_vote_aye,
+				proposal_1_vote_power
+			));
+
+			System::set_block_number(20);
+
+			// Vote proposal 2
+			assert_ok!(Voting::vote(
+				RuntimeOrigin::signed(ALICE),
+				proposal_2_id,
+				proposal_2_vote_aye,
+				proposal_2_vote_power
+			));
+
+			// Storage
+			let proposal_1 = Voting::proposals(proposal_1_id);
+			assert_eq!(
+				proposal_1.unwrap().ratio,
+				(proposal_1_quadratic_amount, proposal_1_quadratic_amount)
+			);
+
+			let proposal_2 = Voting::proposals(proposal_2_id);
+			assert_eq!(proposal_2.unwrap().ratio, (0, proposal_2_quadratic_amount));
+
+			let alice_frozen_balance = <<Test as crate::Config>::NativeBalance as Inspect<
+				<Test as frame_system::Config>::AccountId,
+			>>::balance_frozen(&freeze_id, &ALICE);
+			assert_eq!(
+				alice_frozen_balance,
+				proposal_1_quadratic_amount.saturating_add(proposal_2_quadratic_amount)
+			);
+
+			let vote_1 = Voting::votes(ALICE, proposal_1_id);
+			assert_eq!(
+				vote_1,
+				Some(VoteInfo {
+					proposal_id: proposal_1_id,
+					aye: proposal_1_vote_aye,
+					power: proposal_1_vote_power
+				})
+			);
+
+			let vote_2 = Voting::votes(ALICE, proposal_2_id);
+			assert_eq!(
+				vote_2,
+				Some(VoteInfo {
+					proposal_id: proposal_2_id,
+					aye: proposal_2_vote_aye,
+					power: proposal_2_vote_power
+				})
+			);
+		})
+	}
+}
+
 pub struct ProposalBuilder {
 	pub origin: mock::RuntimeOrigin,
 	pub offchain_data: BoundedVec<u8, ProposalOffchainDataLimit>,
@@ -495,6 +896,19 @@ impl ProposalBuilder {
 
 	pub fn end(mut self, end_block: BlockNumber) -> Self {
 		self.end_block = end_block;
+		self
+	}
+
+	pub fn private(mut self) -> Self {
+		self.kind = ProposalKind::Private;
+		self
+	}
+
+	pub fn set_account_list(
+		mut self,
+		account_list: Option<BoundedVec<u64, AccountSizeLimit>>,
+	) -> Self {
+		self.account_list = account_list;
 		self
 	}
 
