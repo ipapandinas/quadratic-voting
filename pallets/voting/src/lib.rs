@@ -420,8 +420,6 @@ pub mod pallet {
 					});
 				}
 
-				// let new_proposal: ProposalData = proposal;
-
 				// TODO: check if majority is doable in quadratic quorum voting; I don't think so
 				// if proposal.has_majority() {
 				// 	let ratio = proposal.ratio;
