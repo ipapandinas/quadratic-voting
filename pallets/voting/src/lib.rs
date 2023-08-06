@@ -119,12 +119,11 @@ pub mod pallet {
 	#[pallet::event]
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
-		NewVoterRegistered {
-			who: T::AccountId,
-		},
-		VoterUnregistered {
-			who: T::AccountId,
-		},
+		/// A new voter is registered
+		NewVoterRegistered { who: T::AccountId },
+		/// A voter is unregistered
+		VoterUnregistered { who: T::AccountId },
+		/// A new proposal is created
 		ProposalCreated {
 			proposal_id: ProposalId,
 			offchain_data: BoundedVec<u8, T::ProposalOffchainDataLimit>,
@@ -134,34 +133,21 @@ pub mod pallet {
 			start_block: BlockNumberFor<T>,
 			end_block: BlockNumberFor<T>,
 		},
-		ProposalCancelled {
-			proposal_id: ProposalId,
-		},
-		VoteCompleted {
-			proposal_id: ProposalId,
-			ratio: (u128, u128),
-		},
+		/// A proposal that did not start yet is cancelled
+		ProposalCancelled { proposal_id: ProposalId },
+		/// A proposal is closed and the vote is completed
+		VoteCompleted { proposal_id: ProposalId, ratio: (u128, u128) },
+		/// A new account list is set before a proposal has started
 		AccountListSet {
 			proposal_id: ProposalId,
 			account_list: Option<BoundedVec<T::AccountId, T::AccountSizeLimit>>,
 		},
 		/// A new vote was added to an in progress proposal
-		VoteAdded {
-			proposal_id: ProposalId,
-			voter: T::AccountId,
-			aye: bool,
-			power: u128,
-		},
+		VoteAdded { proposal_id: ProposalId, voter: T::AccountId, aye: bool, power: u128 },
 		/// A vote was removed from an in progress proposal
-		VoteDropped {
-			proposal_id: ProposalId,
-			voter: T::AccountId,
-		},
+		VoteDropped { proposal_id: ProposalId, voter: T::AccountId },
 		/// A new vote was added to an in progress proposal
-		BalanceClaimed {
-			who: T::AccountId,
-			amount: BalanceOf<T>,
-		},
+		BalanceClaimed { who: T::AccountId, amount: BalanceOf<T> },
 	}
 
 	// Errors inform users that something went wrong.
