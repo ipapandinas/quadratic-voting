@@ -1,11 +1,9 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 use codec::{Decode, Encode, MaxEncodedLen};
-use frame_support::pallet_prelude::*;
-use frame_support::BoundedVec;
+use frame_support::{pallet_prelude::*, BoundedVec};
 use frame_system::pallet_prelude::BlockNumberFor;
-use scale_info::prelude::fmt::Debug;
-use scale_info::TypeInfo;
+use scale_info::{prelude::fmt::Debug, TypeInfo};
 
 pub type ProposalId = u32;
 /// The current vote ratio for a open proposal.
@@ -32,16 +30,21 @@ where
 	AccountSizeLimit: Get<u32>,
 	ProposalOffchainDataLimit: Get<u32>,
 {
-	/// The data related to this proposal (e.g an CID Hash pointing to a Json file; a static or dynamic link; plain text)
+	/// The data related to this proposal (e.g an CID Hash pointing to a Json file; a static or
+	/// dynamic link; plain text)
 	pub offchain_data: BoundedVec<u8, ProposalOffchainDataLimit>,
 	/// The vote ratio for this proposal.
 	/// The first item represents the number of 'aye' votes.
 	/// The second item represents the total number of votes.
-	/// A poposal gets majority when the are more 'ayes' votes that the half number of total votes when closing the proposal.  
+	/// A poposal gets majority when the are more 'ayes' votes that the half number of total votes
+	/// when closing the proposal.
 	pub ratio: VoteRatio,
 	/// The proposal kind: 'Public' or 'Private'.
-	/// A public proposal is open for all registered voters to vote. The proposal can be closed by the creator once the end_block is reached.
-	/// A private proposal is similar to a quorum vote. The proposal is close as soon as majority is get among the number of registered voters allowed to vote in the account list. The proposal is closed and reject if majority is not reached when passing the ending block.
+	/// A public proposal is open for all registered voters to vote. The proposal can be closed by
+	/// the creator once the end_block is reached. A private proposal is similar to a quorum vote.
+	/// The proposal is close as soon as majority is get among the number of registered voters
+	/// allowed to vote in the account list. The proposal is closed and reject if majority is not
+	/// reached when passing the ending block.
 	pub kind: ProposalKind,
 	/// The proposal creator.
 	pub creator: AccountId,

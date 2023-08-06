@@ -1,9 +1,14 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-use frame_support::sp_runtime::traits::Zero;
-use frame_support::sp_runtime::{SaturatedConversion, Saturating};
-use frame_support::traits::tokens::{Fortitude, Preservation};
-use frame_support::{dispatch::Vec, pallet_prelude::*, traits::fungible};
+use frame_support::{
+	dispatch::Vec,
+	pallet_prelude::*,
+	sp_runtime::{traits::Zero, SaturatedConversion, Saturating},
+	traits::{
+		fungible,
+		tokens::{Fortitude, Preservation},
+	},
+};
 use frame_system::pallet_prelude::BlockNumberFor;
 
 pub use pallet::*;
