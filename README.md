@@ -11,7 +11,7 @@ A quadratic voting systems allows users to vote on an egalitarian basis with a d
 
 ### Abstract
 
-This pallet equips users with the tools required to build a decentralized quadratic voting platform. A well-known account can register to the platform and then create several proposals with customize voting process for each one based on their needs.
+This pallet equips users with the tools required to build a decentralized quadratic voting platform. A well-known account can register to the platform and then create several proposals with customize voting process for each one based on their needs. Then other allowed registered voters vote 'aye' or 'nay'. A proposal is successfully approved when the 'aye' ratio (first item) is greater than 0.5 compare with the half of total number of votes (second item / 2).
 
 ### Customization aspects
 
@@ -112,6 +112,10 @@ interface {
 - A proposal cannot start in the past nor finish before starting.
 - A claim is available only for a closed proposal and an existing voter.
 - A proposal can be cancelled or the account list can be updated if the proposal has not started yet.
+
+### Future ideas
+
+An unsigned tx call hash can be attached to a proposal and be executed by the root account when closing the proposal if success.
 
 ---
 
