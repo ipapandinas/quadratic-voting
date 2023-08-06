@@ -192,10 +192,6 @@ pub mod pallet {
 	// Dispatchable functions must be annotated with a weight and must return a DispatchResult.
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-		/// A registered voter can submit a new proposal by providing offchain data string that can
-		/// be IPFS CID hash that points to a JSON file, a plain text, a small JSON string, or a
-		/// link to either a static or a dynamic file. The proposal can be private (quorum system)
-		/// or public (accessible by others registered voters).
 		#[pallet::call_index(0)]
 		#[pallet::weight(10_000 + T::DbWeight::get().writes(1).ref_time())]
 		pub fn register_voter(origin: OriginFor<T>, who: T::AccountId) -> DispatchResult {
