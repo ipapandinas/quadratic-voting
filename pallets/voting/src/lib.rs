@@ -152,6 +152,11 @@ pub mod pallet {
 			proposal_id: ProposalId,
 			voter: T::AccountId,
 		},
+		/// A new vote was added to an in progress proposal
+		BalanceClaimed {
+			who: T::AccountId,
+			amount: BalanceOf<T>,
+		},
 	}
 
 	// Errors inform users that something went wrong.
@@ -187,6 +192,8 @@ pub mod pallet {
 		InsufficientBalance,
 		/// The new vote is already the active vote
 		IdenticVote,
+		/// Proposal claim does not exist
+		ClaimDoesNotExist,
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -212,10 +219,8 @@ pub mod pallet {
 				Error::<T>::OriginNoPermission
 			);
 
-			let caller = maybe_caller.unwrap();
-
-			for vote in Votes::<T>::iter_prefix_values(caller.clone()) {
-				Pallet::<T>::unfreeze(&caller.clone(), vote.power, 0)?;
+			for vote in Votes::<T>::iter_prefix_values(who.clone()) {
+				Pallet::<T>::unfreeze(&who.clone(), vote.power, 0)?;
 
 				Proposals::<T>::try_mutate(vote.proposal_id, |maybe_proposal| -> DispatchResult {
 					if let Some(proposal) = maybe_proposal {
@@ -225,7 +230,7 @@ pub mod pallet {
 				})?;
 			}
 
-			let _ = Votes::<T>::clear_prefix(caller, u32::MAX, None);
+			let _ = Votes::<T>::clear_prefix(who.clone(), u32::MAX, None);
 			RegisteredVoters::<T>::remove(&who);
 			Self::deposit_event(Event::<T>::VoterUnregistered { who });
 			Ok(())
@@ -449,12 +454,13 @@ pub mod pallet {
 			);
 			ensure!(Proposals::<T>::get(proposal_id).is_none(), Error::<T>::ProposalNotClosed);
 
-			let maybe_vote = Votes::<T>::get(caller.clone(), proposal_id);
-			if let Some(vote) = maybe_vote {
-				Pallet::<T>::unfreeze(&caller, vote.power, 0)?;
-			}
+			let vote = Votes::<T>::get(caller.clone(), proposal_id)
+				.ok_or(Error::<T>::ClaimDoesNotExist)?;
 
+			Pallet::<T>::unfreeze(&caller, vote.power, 0)?;
 			Votes::<T>::remove(caller.clone(), proposal_id);
+			let amount = Pallet::<T>::calculate_quadratic_amount(vote.power);
+			Self::deposit_event(Event::BalanceClaimed { who: caller, amount });
 
 			Ok(())
 		}

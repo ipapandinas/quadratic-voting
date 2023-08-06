@@ -865,6 +865,85 @@ mod vote {
 			);
 		})
 	}
+
+	mod claim {
+		use super::*;
+
+		#[test]
+		fn unregistered_voter_cannot_claim() {
+			new_test_ext().execute_with(|| {
+				assert_noop!(
+					Voting::claim(RuntimeOrigin::signed(BOB), 1),
+					Error::<Test>::VoterNotRegistered
+				);
+			})
+		}
+
+		#[test]
+		fn cannot_claim_in_progress_proposal() {
+			new_test_ext().execute_with(|| {
+				System::set_block_number(1);
+				setup();
+
+				let start_block = 1;
+				let end_block = 200;
+				assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+
+				let proposal_id = Voting::next_proposal_id() - 1;
+
+				assert_noop!(
+					Voting::claim(RuntimeOrigin::signed(ALICE), proposal_id),
+					Error::<Test>::ProposalNotClosed
+				);
+			})
+		}
+
+		#[test]
+		fn claim_work() {
+			ExtBuilder::new_build(vec![(ALICE, 30)]).execute_with(|| {
+				let freeze_id: () =
+					<<Test as pallet_voting::Config>::FreezeIdForPallet as Get<_>>::get();
+				setup();
+
+				let start_block = 1;
+				let end_block = 200;
+				assert_ok!(ProposalBuilder::new().start(start_block).end(end_block).execute());
+
+				System::set_block_number(2);
+				let proposal_id = Voting::next_proposal_id() - 1;
+				let aye = true;
+				let power = 4; // 16 tokens required
+				let quadratic_amount = Voting::calculate_quadratic_amount(power);
+
+				assert_ok!(Voting::vote(RuntimeOrigin::signed(ALICE), proposal_id, aye, power));
+
+				System::set_block_number(201);
+
+				assert_ok!(Voting::close_proposal(RuntimeOrigin::signed(ALICE), proposal_id));
+
+				let alice_frozen_balance = <<Test as crate::Config>::NativeBalance as Inspect<
+					<Test as frame_system::Config>::AccountId,
+				>>::balance_frozen(&freeze_id, &ALICE);
+				assert_eq!(alice_frozen_balance, quadratic_amount);
+
+				assert_ok!(Voting::claim(RuntimeOrigin::signed(ALICE), proposal_id));
+
+				let alice_frozen_balance = <<Test as crate::Config>::NativeBalance as Inspect<
+					<Test as frame_system::Config>::AccountId,
+				>>::balance_frozen(&freeze_id, &ALICE);
+				assert_eq!(alice_frozen_balance, 0);
+
+				// Storage
+				let vote = Voting::votes(ALICE, proposal_id);
+				assert_eq!(vote, None);
+
+				// Event
+				System::assert_last_event(
+					Event::BalanceClaimed { who: ALICE, amount: quadratic_amount }.into(),
+				);
+			})
+		}
+	}
 }
 
 pub struct ProposalBuilder {
