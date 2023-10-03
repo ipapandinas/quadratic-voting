@@ -1,10 +1,3 @@
-[![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-24ddc0f5d75046c5622901739e7c5dd533143b0c8e959d652212380cedb1ea36.svg)](https://classroom.github.com/a/rlFvo65f)
-# PBA Assignment - FRAME
-
-## !! See [ASSIGNMENT.md](./ASSIGNMENT.md) for instructions to complete this assignment !!
-
----
-
 ## Quadratic Voting pallet for a decentralized voting platform
 
 A quadratic voting systems allows users to vote on an egalitarian basis with a distribution of preferences for decision-making.
@@ -132,8 +125,6 @@ Please first check the latest information on getting starting with Substrate dep
 To test while developing, without a full build (thus reduce time to results):
 
 ```sh
-cargo t -p pallet-dex
-cargo t -p pallet-dpos
 cargo t -p pallet-voting
 cargo t -p <other crates>
 ```

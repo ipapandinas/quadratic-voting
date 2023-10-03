@@ -4474,8 +4474,6 @@ dependencies = [
  "pallet-assets",
  "pallet-aura",
  "pallet-balances",
- "pallet-dex",
- "pallet-dpos",
  "pallet-grandpa",
  "pallet-sudo",
  "pallet-timestamp",
@@ -4750,42 +4748,6 @@ dependencies = [
  "scale-info",
  "sp-runtime",
  "sp-std",
-]
-
-[[package]]
-name = "pallet-dex"
-version = "4.0.0-dev"
-dependencies = [
- "frame-benchmarking",
- "frame-support",
- "frame-system",
- "pallet-assets",
- "pallet-balances",
- "parity-scale-codec",
- "pba-interface",
- "scale-info",
- "sp-core",
- "sp-io",
- "sp-runtime",
-]
-
-[[package]]
-name = "pallet-dpos"
-version = "4.0.0-dev"
-dependencies = [
- "frame-benchmarking",
- "frame-support",
- "frame-system",
- "pallet-aura",
- "pallet-balances",
- "pallet-timestamp",
- "parity-scale-codec",
- "pba-interface",
- "scale-info",
- "sp-consensus-aura",
- "sp-core",
- "sp-io",
- "sp-runtime",
 ]
 
 [[package]]
